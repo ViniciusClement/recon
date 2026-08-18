@@ -1,5 +1,5 @@
 # recon
-
+```
 recon.sh — reconhecimento web (JS, secrets, tech, subdomínios, etc.)
 
 Uso:
@@ -39,3 +39,4 @@ Dependências:
 
 Saída:
   Tudo é salvo em ./recon_<dominio>/ com subpastas js/ e results/
+```
