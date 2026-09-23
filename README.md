@@ -5,6 +5,9 @@ recon.sh — reconhecimento web (JS, secrets, tech, subdomínios, etc.)
 Uso:
   ./recon.sh -u <URL> [modos...] [opções]
 
+Melhor comando
+  ./recon.sh -a -u dominio.com.br --rotate-agent --wordlist dir.txt
+
 Modos (podem ser COMBINADOS numa mesma execução):
   -f, --files        Extrai .js do HTML, resolve URLs e baixa os arquivos
   -s, --secret       Roda o SecretFinder nos .js (e no HTML) em busca de segredos
