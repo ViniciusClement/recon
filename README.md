@@ -1,4 +1,4 @@
-# recon.sh - v2.0
+# recon.sh - v3.0
 
 Reconhecimento web em Bash: JS, secrets, fingerprint de tecnologias, subdomínios,
 URLs históricas, probing, brute-force de diretórios, filtros `gf` e **validação
