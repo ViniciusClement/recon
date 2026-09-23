@@ -1,4 +1,4 @@
-# recon.sh — v2.0
+# recon.sh - v4.0
 
 Reconhecimento web em Bash: subdomínios, URLs históricas, extração de `.js` e
 segredos, fingerprint de tecnologias, probing, brute-force de diretórios,
@@ -14,7 +14,7 @@ ordem lógica, independentemente da ordem em que as flags foram passadas.
 
 ---
 
-## Novidades da 2.0
+## Novidades da 4.0
 
 - **`-T, --tech-deep`** — fingerprint aprofundado com **WhatWeb** (aggression 3,
   User-Agent aleatório). O console recebe apenas uma **visão breve** (contagem
