@@ -148,13 +148,13 @@ rodam **apenas nos alvos que passaram na Fase 1**.
 
 ```
 == Fase 1/2: verificando quais alvos estão ativos (httpx) ==
------ preflight [1/113] https://adfs.teletex.com.br -----
-[!] [preflight] httpx não obteve resposta viva de https://adfs.teletex.com.br
+----- preflight [1/113] https://adfs.contoso.com.br -----
+[!] [preflight] httpx não obteve resposta viva de https://adfs.contoso.com.br
 ...
 == Fase 1/2 concluída: 96 ativo(s), 17 fora/inválido(s) de 113 ==
 [+] Alvos ativos salvos em: ./live-targets.txt
 == Fase 2/2: executando módulos em 96 alvo(s) ativo(s) ==
-===== [1/96] https://www.teletex.com.br =====
+===== [1/96] https://www.contoso.com.br =====
 ```
 
 - **`--no-preflight`** → pula a Fase 1; todos os alvos válidos entram direto na
@@ -355,7 +355,7 @@ mesmo domínio** e sinaliza, nos logs e no `SUMMARY.md`, qualquer finding do
 Nuclei ou vulnerabilidade do WPScan que **não existia no run anterior**:
 
 ```
-[!] 🆕 [NOVO em fps.teletexdev.com.br] Nuclei: [wordpress-cve-2026-xxxx] [http] [critical] ...
+[!] 🆕 [NOVO em fps.contosodev.com.br] Nuclei: [wordpress-cve-2026-xxxx] [http] [critical] ...
 ```
 
 Isso cobre exatamente o caso de uma CVE nova afetando uma versão que já foi
