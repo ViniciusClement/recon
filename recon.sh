@@ -15,15 +15,15 @@
 #   * Everything translated to English.
 #
 # Examples:
-#   ./recon_v4.sh -u https://site.com/ --install-deps
-#   ./recon_v4.sh -u https://site.com/ -f -s -v
-#   ./recon_v4.sh -u https://site.com/ -t --json
-#   ./recon_v4.sh -u https://site.com/ -T            # tech-deep (WhatWeb) + vuln validation
-#   ./recon_v4.sh -u https://site.com/ -d            # ffuf + SecLists raft-medium
-#   ./recon_v4.sh -u https://site.com/ -d -k         # ffuf + kiterunner
-#   ./recon_v4.sh -u https://site.com/ --all
-#   ./recon_v4.sh -l sites.txt -f -s                 # several targets, one per line
-#   ./recon_v4.sh -l sites.txt -u extra.com -t       # list + an extra target
+#   ./recon.sh -u https://site.com/ --install-deps
+#   ./recon.sh -u https://site.com/ -f -s -v
+#   ./recon.sh -u https://site.com/ -t --json
+#   ./recon.sh -u https://site.com/ -T            # tech-deep (WhatWeb) + vuln validation
+#   ./recon.sh -u https://site.com/ -d            # ffuf + SecLists raft-medium
+#   ./recon.sh -u https://site.com/ -d -k         # ffuf + kiterunner
+#   ./recon.sh -u https://site.com/ --all
+#   ./recon.sh -l sites.txt -f -s                 # several targets, one per line
+#   ./recon.sh -l sites.txt -u extra.com -t       # list + an extra target
 #
 set -uo pipefail
 

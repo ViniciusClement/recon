@@ -10,7 +10,7 @@ Modes are **combinable** in a single run and the pipeline always executes in a
 logical order, regardless of the order in which the flags were passed.
 
 ```
-./recon_v4.sh -u <URL> [modes...] [options]
+./recon.sh -u <URL> [modes...] [options]
 ```
 
 ---
@@ -55,19 +55,19 @@ detection, the `dashboard.py` web panel, and the consolidated reports.
 Full pipeline (fingerprint + tech-deep + OWASP headers + content discovery + vuln validation):
 
 ```bash
-./recon_v4.sh -u https://target.com/ --all --rotate-agent -v
+./recon.sh -u https://target.com/ --all --rotate-agent -v
 ```
 
 For a list of targets (the two-phase preflight runs automatically):
 
 ```bash
-./recon_v4.sh -l all-sites.txt -U -f -s -T -p -v --rotate-agent
+./recon.sh -l all-sites.txt -U -f -s -T -p -v --rotate-agent
 ```
 
 Leaner, less noisy variant (no directory brute-force):
 
 ```bash
-./recon_v4.sh -u https://target.com/ -S -U -f -T -p -v
+./recon.sh -u https://target.com/ -S -U -f -T -p -v
 ```
 
 > `--all` already includes `-T`, `-d`, `-k` and the vulnerability-validation
@@ -242,8 +242,8 @@ parsing, no `source`).
 ## Dependencies
 
 ```bash
-./recon_v4.sh --check          # check tools, Python modules, wordlists and API keys
-./recon_v4.sh --install-deps   # install what's missing (Python + SecretFinder + SecLists + kiterunner routes) and exit
+./recon.sh --check          # check tools, Python modules, wordlists and API keys
+./recon.sh --install-deps   # install what's missing (Python + SecretFinder + SecLists + kiterunner routes) and exit
 ```
 
 | Flag | Description |
@@ -361,7 +361,7 @@ without authentication.
 ## Running daily via cron
 
 ```cron
-0 3 * * * cd /opt/recon && ./recon_v4.sh -l domains.txt -a >> /opt/recon/logs/recon-$(date +\%Y\%m\%d).log 2>&1
+0 3 * * * cd /opt/recon && ./recon.sh -l domains.txt -a >> /opt/recon/logs/recon-$(date +\%Y\%m\%d).log 2>&1
 ```
 
 Since the script asks for the API keys only the *first* time and then reads them
