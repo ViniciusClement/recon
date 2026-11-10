@@ -1,30 +1,29 @@
 #!/usr/bin/env python3
 """
-dashboard.py — painel web autenticado para o histórico do recon.sh
+dashboard.py — authenticated web dashboard for the recon.sh history
 
-Lê o histórico gravado pelo recon.sh em ./history/ (index.jsonl + snapshots
-JSON por domínio) e serve uma dashboard HTML simples, sem dependências além
-da biblioteca padrão do Python 3 (nenhum pip install necessário).
+Reads the history written by recon.sh under ./history/ (index.jsonl + per-domain
+JSON snapshots) and serves a simple HTML dashboard, with no dependencies beyond
+the Python 3 standard library (no pip install needed).
 
-Uso:
-  # 1) Defina usuário/senha do dashboard (uma vez só; grava em .env)
+Usage:
+  # 1) Set the dashboard user/password (once; stored in .env)
   python3 dashboard.py --set-password
 
-  # 2) Suba o servidor (por padrão só em 127.0.0.1 — use um reverse proxy
-  #    com TLS, ou --cert/--key abaixo, para expor na internet)
+  # 2) Start the server (by default on 127.0.0.1 only — use a reverse proxy
+  #    with TLS, or --cert/--key below, to expose it to the internet)
   python3 dashboard.py --port 8765
 
-  # 2b) Com HTTPS direto (certificado próprio ou autoassinado)
+  # 2b) With direct HTTPS (own or self-signed certificate)
   python3 dashboard.py --port 8765 --cert cert.pem --key key.pem
 
-Segurança:
-  - As credenciais ficam em .env como DASHBOARD_USER e DASHBOARD_PASS_HASH
-    (sha256 salgado — nunca em texto puro).
-  - Autenticação HTTP Basic, comparação por hmac.compare_digest (evita
-    timing attack).
-  - Bind padrão é 127.0.0.1: para acessar de fora, use --host 0.0.0.0 SOMENTE
-    atrás de um reverse proxy com TLS (Caddy/Nginx/Traefik) ou --cert/--key.
-    Basic Auth em HTTP puro exposto à internet vaza a senha em texto claro.
+Security:
+  - Credentials live in .env as DASHBOARD_USER and DASHBOARD_PASS_HASH
+    (salted sha256 — never in clear text).
+  - HTTP Basic auth, compared with hmac.compare_digest (avoids timing attacks).
+  - Default bind is 127.0.0.1: to reach it from outside, use --host 0.0.0.0 ONLY
+    behind a reverse proxy with TLS (Caddy/Nginx/Traefik) or with --cert/--key.
+    Basic Auth over plain HTTP exposed to the internet leaks the password.
 """
 import argparse
 import base64
@@ -47,7 +46,7 @@ HISTORY_DIR = "./history"
 
 
 # ---------------------------------------------------------------------------
-# .env — mesmo formato usado pelo recon.sh (parsing simples, sem exec/source)
+# .env — same format used by recon.sh (simple parsing, no exec/source)
 # ---------------------------------------------------------------------------
 def load_env(path=ENV_FILE):
     env = {}
@@ -105,27 +104,27 @@ def verify_password(password, stored):
 
 
 def cmd_set_password():
-    user = input("Usuário do dashboard [admin]: ").strip() or "admin"
+    user = input("Dashboard user [admin]: ").strip() or "admin"
     while True:
-        pw1 = getpass("Senha: ")
-        pw2 = getpass("Confirme a senha: ")
+        pw1 = getpass("Password: ")
+        pw2 = getpass("Confirm password: ")
         if not pw1:
-            print("Senha vazia não é permitida.")
+            print("An empty password is not allowed.")
             continue
         if pw1 != pw2:
-            print("As senhas não coincidem, tente novamente.")
+            print("Passwords do not match, try again.")
             continue
         break
     save_env_var("DASHBOARD_USER", user)
     save_env_var("DASHBOARD_PASS_HASH", hash_password(pw1))
-    print(f"Credenciais salvas em {ENV_FILE} (chmod 600).")
+    print(f"Credentials saved to {ENV_FILE} (chmod 600).")
 
 
 # ---------------------------------------------------------------------------
-# Leitura do histórico gravado pelo recon.sh
+# Reading the history written by recon.sh
 # ---------------------------------------------------------------------------
 def read_index():
-    """Lê history/index.jsonl -> lista de {domain, timestamp, file}."""
+    """Read history/index.jsonl -> list of {domain, timestamp, file}."""
     idx_path = os.path.join(HISTORY_DIR, "index.jsonl")
     rows = []
     if not os.path.exists(idx_path):
@@ -151,8 +150,8 @@ def load_snapshot(path):
 
 
 def domains_overview():
-    """Agrupa o índice por domínio, retornando o snapshot mais recente de
-    cada um mais a contagem de runs e se o último run trouxe novidade."""
+    """Group the index by domain, returning each one's most recent snapshot
+    plus the run count and whether the last run brought something new."""
     rows = read_index()
     by_domain = {}
     for r in rows:
@@ -181,8 +180,8 @@ def domains_overview():
 
 
 def domain_timeline(domain):
-    """Lista todos os snapshots de um domínio, mais antigo -> mais novo,
-    cada um já com as novidades em relação ao anterior calculadas."""
+    """List every snapshot of a domain, oldest -> newest, each already with the
+    findings new relative to the previous run computed."""
     rows = [r for r in read_index() if r["domain"] == domain]
     rows.sort(key=lambda r: r.get("timestamp", ""))
     timeline = []
@@ -194,13 +193,13 @@ def domain_timeline(domain):
         new_findings = diff_findings(prev_snap, snap)
         timeline.append({"snapshot": snap, "new_findings": new_findings})
         prev_snap = snap
-    timeline.reverse()  # mais recente primeiro na tela
+    timeline.reverse()  # most recent first on screen
     return timeline
 
 
 def diff_findings(previous, current):
-    """Achados do snapshot atual que não existiam no anterior (mesma lógica
-    do recon.sh, refeita aqui para exibição na dashboard)."""
+    """Findings in the current snapshot that did not exist in the previous one
+    (same logic as recon.sh, redone here for the dashboard)."""
     if current is None:
         return []
     prev_nuclei = set((previous or {}).get("nuclei_findings", []))
@@ -221,11 +220,11 @@ def fmt_ts(ts):
         d = datetime.strptime(ts, "%Y%m%d-%H%M%S")
         return d.strftime("%Y-%m-%d %H:%M:%S")
     except (ValueError, TypeError):
-        return ts or "—"
+        return ts or "-"
 
 
 # ---------------------------------------------------------------------------
-# HTML (sem dependências externas, CSS embutido)
+# HTML (no external dependencies, inline CSS)
 # ---------------------------------------------------------------------------
 BASE_CSS = """
 :root{--bg:#0b0f14;--panel:#121820;--border:#1f2833;--text:#e6edf3;
@@ -261,14 +260,14 @@ a.domain-link:hover{color:var(--accent);}
 
 
 def page(title, body, back_link=None):
-    back = f'<a href="{back_link}">&larr; voltar</a>' if back_link else ""
+    back = f'<a href="{back_link}">&larr; back</a>' if back_link else ""
     return f"""<!doctype html>
-<html lang="pt-br"><head><meta charset="utf-8">
+<html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{html.escape(title)} — recon.sh dashboard</title>
+<title>{html.escape(title)} - recon.sh dashboard</title>
 <style>{BASE_CSS}</style></head>
 <body>
-<header><h1>🛰️ recon.sh — dashboard</h1>{back}</header>
+<header><h1>recon.sh - dashboard</h1>{back}</header>
 <main>{body}</main>
 </body></html>"""
 
@@ -276,9 +275,9 @@ def page(title, body, back_link=None):
 def render_home():
     overview = domains_overview()
     if not overview:
-        body = '<div class="empty">Nenhum histórico encontrado ainda em <code>./history/</code>.<br>' \
-               'Rode o recon.sh pelo menos uma vez (com -t ou -T) para começar a popular a dashboard.</div>'
-        return page("Domínios", body)
+        body = '<div class="empty">No history found yet in <code>./history/</code>.<br>' \
+               'Run recon.sh at least once (with -t or -T) to start populating the dashboard.</div>'
+        return page("Domains", body)
 
     rows = []
     for o in overview:
@@ -290,39 +289,43 @@ def render_home():
             label = f"{name} {ver}".strip()
             css = {"wordpress": "badge-wp", "nginx": "badge-nginx", "apache": "badge-apache"}.get(name, "badge-ok")
             badges.append(f'<span class="badge {css}">{html.escape(label)}</span>')
-        badges_html = "".join(badges) or '<span class="pill">—</span>'
+        badges_html = "".join(badges) or '<span class="pill">-</span>'
 
         new_badge = ""
         if o["new_findings"]:
-            new_badge = f'<span class="badge badge-new">🆕 {len(o["new_findings"])} novo(s)</span>'
+            new_badge = f'<span class="badge badge-new">{len(o["new_findings"])} new</span>'
 
-        ports = ",".join(snap.get("ports", [])) or "—"
+        ports = ",".join(snap.get("ports", [])) or "-"
         nuclei_n = len(snap.get("nuclei_findings", []))
+        secrets_v = snap.get("trufflehog_verified", 0)
+        api_n = snap.get("api_routes_count", 0)
 
         rows.append(f"""<tr>
 <td><a class="domain-link" href="/domain/{html.escape(o['domain'])}">{html.escape(o['domain'])}</a></td>
 <td>{badges_html}</td>
 <td class="pill">{html.escape(ports)}</td>
 <td class="pill">{nuclei_n}</td>
+<td class="pill">{secrets_v}</td>
+<td class="pill">{api_n}</td>
 <td>{new_badge}</td>
 <td class="pill">{fmt_ts(o['last_run'])}</td>
 <td class="pill">{o['runs']}</td>
 </tr>""")
 
     body = f"""
-<p class="pill">{len(overview)} domínio(s) com histórico. Clique em um domínio para ver a linha do tempo completa.</p>
+<p class="pill">{len(overview)} domain(s) with history. Click a domain to see the full timeline.</p>
 <table>
-<thead><tr><th>Domínio</th><th>Tecnologias</th><th>Portas</th><th>Nuclei</th><th>Novidades</th><th>Último run</th><th>Runs</th></tr></thead>
+<thead><tr><th>Domain</th><th>Technologies</th><th>Ports</th><th>Nuclei</th><th>Verified secrets</th><th>API routes</th><th>New</th><th>Last run</th><th>Runs</th></tr></thead>
 <tbody>{"".join(rows)}</tbody>
 </table>
 """
-    return page("Domínios", body)
+    return page("Domains", body)
 
 
 def render_domain(domain):
     timeline = domain_timeline(domain)
     if not timeline:
-        return page(domain, '<div class="empty">Nenhum histórico para este domínio.</div>', back_link="/")
+        return page(domain, '<div class="empty">No history for this domain.</div>', back_link="/")
 
     cards = []
     for entry in timeline:
@@ -332,35 +335,37 @@ def render_domain(domain):
 
         techs = ", ".join(
             f"{t.get('name')} {t.get('version')}".strip() for t in snap.get("techs", [])
-        ) or "—"
-        ports = ", ".join(snap.get("ports", [])) or "—"
+        ) or "-"
+        ports = ", ".join(snap.get("ports", [])) or "-"
 
         finding_lines = []
         new_set = set(new)
         for line in snap.get("nuclei_findings", []):
             is_new = ("Nuclei", line) in new_set
             cls = "finding new" if is_new else "finding"
-            mark = "🆕 " if is_new else ""
+            mark = "NEW " if is_new else ""
             finding_lines.append(f'<div class="{cls}">{mark}{html.escape(line)}</div>')
         for line in snap.get("wpscan_vulnerabilities", []):
             is_new = ("WPScan", line) in new_set
             cls = "finding new" if is_new else "finding"
-            mark = "🆕 " if is_new else ""
+            mark = "NEW " if is_new else ""
             finding_lines.append(f'<div class="{cls}">{mark}[WPScan] {html.escape(line)}</div>')
-        findings_html = "".join(finding_lines) or '<span class="pill">Nenhum finding registrado neste run.</span>'
+        findings_html = "".join(finding_lines) or '<span class="pill">No finding recorded in this run.</span>'
 
-        new_badge = f'<span class="badge badge-new">🆕 {len(new)} novidade(s) desde o run anterior</span>' if new else ""
+        new_badge = f'<span class="badge badge-new">{len(new)} new since the previous run</span>' if new else ""
 
         cards.append(f"""
 <div class="card">
   <strong>{ts}</strong> {new_badge}
   <div class="pill" style="margin-top:.4rem">
-    Techs: {html.escape(techs)} &nbsp;·&nbsp;
-    Portas: {html.escape(ports)} &nbsp;·&nbsp;
-    Subdomínios: {snap.get('subdomains_count', 0)} &nbsp;·&nbsp;
-    URLs: {snap.get('urls_count', 0)} &nbsp;·&nbsp;
-    Segredos: {snap.get('secrets_count', 0)} &nbsp;·&nbsp;
-    Diretórios: {snap.get('dirs_count', 0)}
+    Techs: {html.escape(techs)} &nbsp;&middot;&nbsp;
+    Ports: {html.escape(ports)} &nbsp;&middot;&nbsp;
+    Subdomains: {snap.get('subdomains_count', 0)} &nbsp;&middot;&nbsp;
+    URLs: {snap.get('urls_count', 0)} &nbsp;&middot;&nbsp;
+    Secrets: {snap.get('secrets_count', 0)} &nbsp;&middot;&nbsp;
+    Verified: {snap.get('trufflehog_verified', 0)} &nbsp;&middot;&nbsp;
+    Directories: {snap.get('dirs_count', 0)} &nbsp;&middot;&nbsp;
+    API routes: {snap.get('api_routes_count', 0)}
   </div>
   <div class="section-title">Findings</div>
   {findings_html}
@@ -371,7 +376,7 @@ def render_domain(domain):
 
 
 # ---------------------------------------------------------------------------
-# Servidor HTTP com Basic Auth
+# HTTP server with Basic Auth
 # ---------------------------------------------------------------------------
 class Handler(BaseHTTPRequestHandler):
     server_version = "recon-dashboard/1.0"
@@ -399,7 +404,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("WWW-Authenticate", 'Basic realm="recon-dashboard"')
         self.send_header("Content-Type", "text/plain; charset=utf-8")
         self.end_headers()
-        self.wfile.write(b"Autenticacao necessaria.")
+        self.wfile.write(b"Authentication required.")
 
     def _send_html(self, content, status=200):
         body = content.encode("utf-8")
@@ -431,7 +436,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self._send_html(render_domain(domain))
         else:
-            self._send_html(page("Não encontrado", '<div class="empty">404 — página não encontrada.</div>'), status=404)
+            self._send_html(page("Not found", '<div class="empty">404 - page not found.</div>'), status=404)
 
 
 def run_server(host, port, cert=None, key=None):
@@ -439,8 +444,8 @@ def run_server(host, port, cert=None, key=None):
     user = env.get("DASHBOARD_USER")
     pass_hash = env.get("DASHBOARD_PASS_HASH")
     if not user or not pass_hash:
-        print("Credenciais do dashboard não configuradas.", file=sys.stderr)
-        print(f"Rode primeiro: python3 {sys.argv[0]} --set-password", file=sys.stderr)
+        print("Dashboard credentials are not configured.", file=sys.stderr)
+        print(f"Run first: python3 {sys.argv[0]} --set-password", file=sys.stderr)
         sys.exit(1)
 
     httpd = ThreadingHTTPServer((host, port), Handler)
@@ -455,11 +460,11 @@ def run_server(host, port, cert=None, key=None):
         scheme = "https"
 
     if host not in ("127.0.0.1", "localhost") and scheme == "http":
-        print("AVISO: servindo HTTP (sem TLS) em um endereço não-local.", file=sys.stderr)
-        print("       Basic Auth em HTTP puro expõe a senha em texto claro na rede.", file=sys.stderr)
-        print("       Use --cert/--key, ou coloque atrás de um reverse proxy com TLS.", file=sys.stderr)
+        print("WARNING: serving HTTP (no TLS) on a non-local address.", file=sys.stderr)
+        print("         Basic Auth over plain HTTP leaks the password on the network.", file=sys.stderr)
+        print("         Use --cert/--key, or put it behind a reverse proxy with TLS.", file=sys.stderr)
 
-    print(f"Dashboard em {scheme}://{host}:{port}/  (usuário: {user})", file=sys.stderr)
+    print(f"Dashboard at {scheme}://{host}:{port}/  (user: {user})", file=sys.stderr)
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
@@ -468,13 +473,13 @@ def run_server(host, port, cert=None, key=None):
 
 def main():
     global HISTORY_DIR
-    ap = argparse.ArgumentParser(description="Dashboard web do histórico do recon.sh")
-    ap.add_argument("--set-password", action="store_true", help="Define/atualiza usuário e senha do dashboard")
-    ap.add_argument("--host", default="127.0.0.1", help="Endereço para bind (default: 127.0.0.1)")
-    ap.add_argument("--port", type=int, default=8765, help="Porta (default: 8765)")
-    ap.add_argument("--history-dir", default=HISTORY_DIR, help="Diretório de histórico do recon.sh")
-    ap.add_argument("--cert", default=None, help="Certificado TLS (PEM) para servir HTTPS diretamente")
-    ap.add_argument("--key", default=None, help="Chave privada TLS (PEM) correspondente ao --cert")
+    ap = argparse.ArgumentParser(description="recon.sh history web dashboard")
+    ap.add_argument("--set-password", action="store_true", help="Set/update the dashboard user and password")
+    ap.add_argument("--host", default="127.0.0.1", help="Bind address (default: 127.0.0.1)")
+    ap.add_argument("--port", type=int, default=8765, help="Port (default: 8765)")
+    ap.add_argument("--history-dir", default=HISTORY_DIR, help="recon.sh history directory")
+    ap.add_argument("--cert", default=None, help="TLS certificate (PEM) to serve HTTPS directly")
+    ap.add_argument("--key", default=None, help="TLS private key (PEM) matching --cert")
     args = ap.parse_args()
 
     HISTORY_DIR = args.history_dir
@@ -484,7 +489,7 @@ def main():
         return
 
     if bool(args.cert) != bool(args.key):
-        print("Erro: --cert e --key precisam ser usados juntos.", file=sys.stderr)
+        print("Error: --cert and --key must be used together.", file=sys.stderr)
         sys.exit(1)
 
     run_server(args.host, args.port, cert=args.cert, key=args.key)
