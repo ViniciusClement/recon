@@ -1,0 +1,17 @@
+# API keys and dashboard credentials
+.env
+
+# Recon output
+recon_*/
+live-targets.txt
+recon-final-report.md
+owasp-headers-report.md
+history/
+
+# Installed deps / wordlists
+SecretFinder/
+SecLists/
+kiterunner/*.kite
+kiterunner/*.tar.gz
+Sublist3r/
+dirsearch/
