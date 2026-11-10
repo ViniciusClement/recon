@@ -177,9 +177,15 @@ Three engines run over the target, each covering what the others miss:
 
 | Engine | Input | What it does |
 |--------|-------|--------------|
-| **SecretFinder** | each JS URL + the HTML | Regex set for API keys/tokens embedded in JavaScript |
+| **SecretFinder** | the downloaded files in `js/` (the URL only as a fallback when a file was not mirrored) | Regex set for API keys/tokens embedded in JavaScript |
 | **TruffleHog**   | the downloaded files (`js/`) | 800+ detectors, and **live-verifies** each secret against the provider's API (disable with `--no-verify`) |
 | **Gitleaks**     | the downloaded files (`js/`) | Regex + Shannon-entropy detection |
+
+All three read the files `-f` already downloaded, so extraction is **offline** —
+the only network traffic in `-s` is TruffleHog's optional verification (disable
+it with `--no-verify`). Run `-f` before `-s` (or let `-s` trigger the crawl); if
+you pass a `--jsfile` list without a crawl, SecretFinder falls back to fetching
+each URL.
 
 The script cross-checks the two filesystem scanners: a Gitleaks finding that
 lands on the same `file:line` as a TruffleHog **verified** secret is marked

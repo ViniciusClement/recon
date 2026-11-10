@@ -770,6 +770,16 @@ for line in sys.stdin:
 ' "$1"
 }
 
+# Local mirror path for a URL: js/<host>/<server path> (query stripped, a
+# trailing slash becomes /index.html, unsafe chars replaced). Shared by the
+# crawler (where it writes) and SecretFinder (where it reads), so both agree.
+_mirror_path() {
+  local rel
+  rel="$(echo "$1" | sed -E 's#^https?://##; s#\?.*$##; s#/$#/index.html#')"
+  rel="$(echo "$rel" | sed -E 's#[^A-Za-z0-9._/@-]#_#g')"
+  echo "${JSDIR}/${rel}"
+}
+
 # ---------------------------------------------------------------------------
 # Mode: -files (recursive asset crawler)
 # ---------------------------------------------------------------------------
@@ -808,10 +818,8 @@ run_files() {
     count=$((count + 1))
 
     # Mirror the server path locally: js/<host>/<path>.
-    local rel out
-    rel="$(echo "$url" | sed -E 's#^https?://##; s#\?.*$##; s#/$#/index.html#')"
-    rel="$(echo "$rel" | sed -E 's#[^A-Za-z0-9._/@-]#_#g')"
-    out="${JSDIR}/${rel}"
+    local out
+    out="$(_mirror_path "$url")"
 
     fetch_to "$url" "$out"
     if [ "$FETCH_CODE" != "200" ] || [ ! -s "$out" ]; then
@@ -887,10 +895,15 @@ run_secretfinder() {
   local json_out="[" first=1
   while IFS= read -r target; do
     [ -z "$target" ] && continue
-    vlog "SecretFinder -> $target"
+    # Prefer the already-downloaded local copy (offline); fall back to the URL
+    # only when -f did not mirror it (e.g. --jsfile list without a crawl).
+    local scan_in local_copy
+    local_copy="$(_mirror_path "$target")"
+    if [ -s "$local_copy" ]; then scan_in="$local_copy"; else scan_in="$target"; fi
+    vlog "SecretFinder -> $scan_in"
     if [ "$JSON" -eq 1 ]; then
       local result esc
-      result="$(python3 "$SECRETFINDER_PATH" -i "$target" -o cli 2>/dev/null)"
+      result="$(python3 "$SECRETFINDER_PATH" -i "$scan_in" -o cli 2>/dev/null)"
       if [ -n "$result" ]; then
         esc="$(python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))' <<< "$result")"
         [ "$first" -eq 0 ] && json_out+=","
@@ -898,7 +911,7 @@ run_secretfinder() {
         first=0
       fi
     else
-      python3 "$SECRETFINDER_PATH" -i "$target" -o cli
+      python3 "$SECRETFINDER_PATH" -i "$scan_in" -o cli
     fi
   done < "$list_file"
 
