@@ -60,6 +60,11 @@ NO_PREFLIGHT=0               # skip the httpx liveness check (--no-preflight)
 SELF_UPDATE=1                # update script/templates/DBs before recon (--no-self-update disables)
 HISTORY_DIR="${HISTORY_DIR:-./history}"  # run history (read by the dashboard)
 
+# Recursive asset crawler (-f)
+JS_DEPTH="${JS_DEPTH:-5}"          # max recursion depth (page = 0, its assets = 1, ...)
+JS_MAX="${JS_MAX:-2000}"           # hard cap on files downloaded per target
+JS_THIRD_PARTY=0                   # also download out-of-scope (CDN/third-party) assets (--js-third-party)
+
 # Secret scanners (-s)
 SECRET_VERIFY=1                    # TruffleHog live verification (--no-verify disables)
 
@@ -243,98 +248,104 @@ ensure_api_key() {
 # Help
 # ---------------------------------------------------------------------------
 usage() {
+  # Colorize only on an interactive terminal (and unless --no-color was given).
+  local B="" C="" D="" Y="" G="" R0=""
+  if [ "${NO_COLOR:-0}" != "1" ] && [ -t 1 ]; then
+    B=$'\033[1m'; C=$'\033[0;36m'; D=$'\033[2m'; Y=$'\033[1;33m'; G=$'\033[0;32m'; R0=$'\033[0m'
+  fi
+  local H="${B}${C}"   # section heading
+  local F="${G}"       # flag
   cat <<EOF
-recon.sh v${RECON_VERSION} — web reconnaissance (deep JS, secrets, tech, subdomains, content discovery...)
+${B}${C}recon.sh v${RECON_VERSION}${R0}  ${D}·${R0}  ${B}web reconnaissance toolkit${R0}
+${D}deep JS · secrets · tech · content discovery · vulnerabilities${R0}
+${C}──────────────────────────────────────────────────────────────${R0}
 
-Usage:
-  $0 -u <URL> [modes...] [options]
+${H}USAGE${R0}
+  ${B}$0${R0} ${F}-u${R0} <URL> [modes...] [options]       ${D}# single target${R0}
+  ${B}$0${R0} ${F}-l${R0} <file> [modes...] [options]      ${D}# many targets (two-phase preflight)${R0}
 
-Modes (can be COMBINED in a single run):
-  -f, --files        Extract .js from the HTML, resolve the URLs and download the files
-  -s, --secret       Secret scanning: SecretFinder + TruffleHog (verified) + Gitleaks
-  -t, --tech         Technology fingerprint + version guess
-  -T, --tech-deep    Deep fingerprint (WhatWeb) + OWASP security headers analysis
-  -S, --subdomains   Enumerate subdomains (sublist3r; crt.sh fallback)
-  -U, --urls         Collect historical URLs for the domain (gau)
-  -p, --probe        Port scan (naabu, top 100) + live hosts/URLs (httpx)
-  -d, --dirs         Content discovery with ffuf + SecLists (dirsearch fallback)
-  -k, --kite         API route discovery with kiterunner (Assetnote routes + SecLists)
-  -g, --gf           Filter collected URLs with dangerous patterns (gf + Gf-Patterns)
-  -a, --all          Run every available module, in logical order
+${H}MODES${R0} ${D}(combinable; always run in pipeline order)${R0}
+  ${F}-f${R0}, ${F}--files${R0}        Recursive asset crawler — page ▸ JS/CSS ▸ the chunks they
+                     reference ▸ … mirrored under ${D}js/<host>/${R0} (same-origin)
+  ${F}-s${R0}, ${F}--secret${R0}       Secrets — SecretFinder + TruffleHog ${D}(verified)${R0} + Gitleaks
+  ${F}-t${R0}, ${F}--tech${R0}         Technology fingerprint + version guess
+  ${F}-T${R0}, ${F}--tech-deep${R0}    Deep fingerprint ${D}(WhatWeb)${R0} + OWASP security-header analysis
+  ${F}-S${R0}, ${F}--subdomains${R0}   Enumerate subdomains ${D}(sublist3r; crt.sh fallback)${R0}
+  ${F}-U${R0}, ${F}--urls${R0}         Historical URLs for the domain ${D}(gau)${R0}
+  ${F}-p${R0}, ${F}--probe${R0}        Port scan ${D}(naabu top 100)${R0} + live hosts ${D}(httpx)${R0}
+  ${F}-d${R0}, ${F}--dirs${R0}         Content discovery — ffuf + SecLists ${D}(dirsearch fallback)${R0}
+  ${F}-k${R0}, ${F}--kite${R0}         API route discovery — kiterunner ${D}(Assetnote + SecLists)${R0}
+  ${F}-g${R0}, ${F}--gf${R0}           Flag dangerous URLs ${D}(gf + Gf-Patterns)${R0}
+  ${F}-a${R0}, ${F}--all${R0}          Run every module, in logical order
 
-Options:
-  -u, --url <URL>          Target URL (repeatable; can be combined with -l)
-  -l, --list <file>        File with a list of targets, one per line
-                           (bare domain or URL; lines starting with # are ignored)
-  -o, --output <file>      Specific output file (ignored with multiple targets)
-  -w, --wordlist <file>    Wordlist for --dirs (default: SecLists raft-<size>-directories.txt)
-      --wordlist-size <s>  SecLists raft wordlist size for --dirs: small|medium|large (default: ${WORDLIST_SIZE})
-      --kite-wordlist <f>  kiterunner routes file (.kite) (default: auto-detect in ${KITE_DIR}/)
-      --seclists <dir>     SecLists directory (default: auto-detect)
-      --jsfile <file>      Reuse an existing JS URL list (skips crawling in --secret)
-      --no-verify          Do not let TruffleHog verify secrets against the provider APIs
-      --gf-pattern <name>  gf pattern to use (default: xss)
-      --env <file>         .env file with API keys (default: ${ENV_FILE})
-      --wpscan-enum <e>    WPScan enumeration (default: ${WPSCAN_ENUM})
-      --wpscan-detection <m>  WPScan plugin/theme detection: passive|mixed|aggressive (default: ${WPSCAN_DETECTION})
-      --nuclei-tags <t>    Extra nuclei tags (comma-separated) added to the detected ones
-      --no-vuln            Disable vulnerability validation (wpscan/nuclei)
-      --no-preflight       Do not check liveness with httpx before running modules
-      --no-self-update     Do not update the script/nuclei-templates/WPScan DB/Exploit-DB before running
-      --rotate-agent       Rotate the User-Agent every 5 requests
-      --timeout <sec>      Per-request timeout (default: ${TIMEOUT})
-  -v, --verbose            Verbose logging to stderr
-  -j, --json               JSON output (where applicable)
-      --no-color           Disable colors
+  ${D}Pipeline: subdomains ▸ urls ▸ files ▸ tech ▸ tech-deep ▸ secret ▸${R0}
+  ${D}          probe ▸ dirs ▸ kite ▸ gf ▸ vulnerability validation${R0}
 
-Dependencies:
-      --check              Check every tool/module and exit
-      --install-deps       Install what is missing (Python, SecretFinder, SecLists, kiterunner routes) and exit
-      --yes                Answer "yes" to installs (non-interactive)
-      --no-install         Never install anything automatically
-  -h, --help               This help
+${H}TARGETS & OUTPUT${R0}
+  ${F}-u${R0}, ${F}--url${R0} <URL>       Target URL ${D}(repeatable; combines with -l)${R0}
+  ${F}-l${R0}, ${F}--list${R0} <file>     Targets file, one per line ${D}(# = comment)${R0}
+  ${F}-o${R0}, ${F}--output${R0} <file>   Specific output file ${D}(ignored with many targets)${R0}
+  ${F}-j${R0}, ${F}--json${R0}           JSON output where applicable
+  ${F}-v${R0}, ${F}--verbose${R0}        Verbose logging to stderr
+      ${F}--no-color${R0}       Disable colors
 
-Secret scanning (-s):
-  SecretFinder (regex, per JS URL), TruffleHog (filesystem scan of js/, with live
-  verification unless --no-verify) and Gitleaks (filesystem scan of js/).
-  Gitleaks findings on the same file/line as a TruffleHog-verified secret are
-  marked as confirmed. Outputs: results/trufflehog.jsonl, results/gitleaks.json,
-  results/secrets-all.txt (consolidated, values redacted).
+${H}CRAWLER${R0} ${D}(-f)${R0}
+      ${F}--js-depth${R0} <n>     Max recursion depth           ${D}(default: ${JS_DEPTH})${R0}
+      ${F}--js-max${R0} <n>       Max files per target          ${D}(default: ${JS_MAX})${R0}
+      ${F}--js-third-party${R0}   Also download out-of-scope assets ${D}(CDNs)${R0}
+      ${F}--jsfile${R0} <file>    Reuse a JS URL list ${D}(skips crawling in -s)${R0}
 
-Vulnerability validation (automatic after -t/-T; disable with --no-vuln):
-  WordPress            -> WPScan (uses WPSCAN_API_TOKEN when available)
-  Nginx / Apache       -> Nuclei (by tag) + searchsploit by version
-  API keys are requested at startup and saved to ${ENV_FILE} (chmod 600).
+${H}CONTENT DISCOVERY${R0} ${D}(-d / -k)${R0}
+  ${F}-w${R0}, ${F}--wordlist${R0} <f>   Wordlist for -d ${D}(default: SecLists raft-<size>)${R0}
+      ${F}--wordlist-size${R0} <s> raft size: small|medium|large ${D}(default: ${WORDLIST_SIZE})${R0}
+      ${F}--seclists${R0} <dir>   SecLists directory            ${D}(default: auto-detect)${R0}
+      ${F}--kite-wordlist${R0} <f> kiterunner .kite routes       ${D}(default: ${KITE_DIR}/)${R0}
+      ${F}--gf-pattern${R0} <name> gf pattern                    ${D}(default: xss)${R0}
 
-Two-phase preflight: Phase 1 checks ALL targets with httpx and builds the list
-of live ones (./live-targets.txt); Phase 2 runs the modules only on live targets.
---no-preflight skips Phase 1 (every target goes straight to the modules).
+${H}SECRETS${R0} ${D}(-s)${R0}
+      ${F}--no-verify${R0}        Do not let TruffleHog verify secrets live
 
-Self-update (meant for a daily cron; disable with --no-self-update):
-  Before each run the script updates itself (git pull, when applicable),
-  nuclei-templates, the WPScan metadata DB and the local Exploit-DB, so a new
-  CVE published today is detected in tomorrow's run against the same software
-  version. Each run writes a snapshot to ./history/ and highlights in the logs
-  (and in SUMMARY.md) any finding that did not exist in that domain's previous
-  run, with 🆕.
+${H}VULNERABILITIES${R0} ${D}(auto after -t/-T; disable with --no-vuln)${R0}
+      ${F}--wpscan-enum${R0} <e>      WPScan enumeration        ${D}(default: ${WPSCAN_ENUM})${R0}
+      ${F}--wpscan-detection${R0} <m> passive|mixed|aggressive  ${D}(default: ${WPSCAN_DETECTION})${R0}
+      ${F}--nuclei-tags${R0} <t>      Extra nuclei tags ${D}(comma-separated)${R0}
+      ${F}--no-vuln${R0}             Disable the whole validation stage
 
-Web dashboard (separate file — dashboard.py):
-  python3 dashboard.py --set-password   # set user/password (once)
-  python3 dashboard.py --port 8765      # start the authenticated dashboard
-  Reads ./history/ and shows, per domain, the run history and what changed
-  between runs. See the README for security/exposure details.
+${H}GENERAL${R0}
+      ${F}--env${R0} <file>       .env with API keys            ${D}(default: ${ENV_FILE})${R0}
+      ${F}--timeout${R0} <sec>    Per-request timeout           ${D}(default: ${TIMEOUT})${R0}
+      ${F}--rotate-agent${R0}     Rotate the User-Agent every 5 requests
+      ${F}--no-preflight${R0}     Skip the httpx liveness phase
+      ${F}--no-self-update${R0}   Skip updating script / CVE databases
 
-Security headers (in -T mode): compares the headers with the OWASP Cheat Sheet,
-highlights the missing ones in the logs and writes a consolidated report to
-${HEADERS_REPORT} (applications + missing headers).
+${H}DEPENDENCIES${R0}
+      ${F}--check${R0}            Check every tool/module and exit
+      ${F}--install-deps${R0}     Install what is missing and exit
+      ${F}--yes${R0}              Assume "yes" to installs ${D}(non-interactive)${R0}
+      ${F}--no-install${R0}       Never install anything automatically
+  ${F}-h${R0}, ${F}--help${R0}           This help
 
-Output:
-  Everything is saved to ./recon_<domain>/ with js/ and results/ subfolders
-  Port scan (-p): results/naabu.txt (top 100 ports)
-  Content discovery (-d): results/ffuf.json, results/dirs.txt
-  API routes (-k): results/kiterunner.txt, results/api-routes.txt
-  OWASP header analysis: results/security-headers.txt (per target) and
-  ${HEADERS_REPORT} (consolidated)
+${H}EXAMPLES${R0}
+  ${D}# full pipeline against one target${R0}
+  $0 ${F}-u${R0} https://target.com/ ${F}--all${R0} ${F}--rotate-agent${R0} ${F}-v${R0}
+  ${D}# crawl JS deeply, then scan the mirror for secrets${R0}
+  $0 ${F}-u${R0} https://target.com/ ${F}-f${R0} ${F}-s${R0} ${F}--js-depth${R0} 8 ${F}-v${R0}
+  ${D}# content + API discovery only${R0}
+  $0 ${F}-u${R0} https://target.com/ ${F}-d${R0} ${F}-k${R0}
+  ${D}# list of targets (liveness preflight runs first)${R0}
+  $0 ${F}-l${R0} sites.txt ${F}-U${R0} ${F}-f${R0} ${F}-T${R0} ${F}-p${R0} ${F}-v${R0}
+  ${D}# check / install tooling${R0}
+  $0 ${F}--check${R0}      ·      $0 ${F}--install-deps${R0}
+
+${H}OUTPUT${R0} ${D}(per target, under ./recon_<domain>/)${R0}
+  ${D}js/<host>/…${R0}            mirrored assets        ${D}results/secrets-all.txt${R0}  secrets
+  ${D}results/files-js.txt${R0}   JS list                ${D}results/ffuf.json${R0}        dirs
+  ${D}results/api-routes.txt${R0} API routes             ${D}results/nuclei.txt${R0}       vulns
+  ${D}SUMMARY.md${R0}             per-target summary     ${D}./recon-final-report.md${R0}  all targets
+  ${D}Dashboard:${R0} python3 dashboard.py --set-password && python3 dashboard.py --port 8765
+
+${Y}Authorized testing only. --all, -T, ffuf/kiterunner and wpscan/nuclei generate
+significant, logged traffic. Use only with explicit written permission.${R0}
 EOF
 }
 
@@ -660,7 +671,7 @@ fetch() {
   ua="$(current_ua)"
   REQ_COUNT=$((REQ_COUNT + 1))
   vlog "[req #$REQ_COUNT] UA=$ua -> $target"
-  curl -s -L -A "$ua" --max-time "$TIMEOUT" "$target"
+  curl -s -L -A "$ua" --max-time "$TIMEOUT" "$target" </dev/null
 }
 
 fetch_headers() {
@@ -668,7 +679,7 @@ fetch_headers() {
   ua="$(current_ua)"
   REQ_COUNT=$((REQ_COUNT + 1))
   vlog "[req #$REQ_COUNT] UA=$ua -> HEAD $target"
-  curl -s -I -L -A "$ua" --max-time "$TIMEOUT" "$target"
+  curl -s -I -L -A "$ua" --max-time "$TIMEOUT" "$target" </dev/null
 }
 
 # Download <url> to <file> WITHOUT a subshell, so REQ_COUNT is kept.
@@ -681,7 +692,7 @@ fetch_to() {
   REQ_COUNT=$((REQ_COUNT + 1))
   vlog "[req #$REQ_COUNT] UA=$ua -> $target"
   mkdir -p "$(dirname "$out")" 2>/dev/null
-  res="$(curl -s -L -A "$ua" --max-time "$TIMEOUT" -o "$out" -w '%{http_code} %{url_effective}' "$target" 2>/dev/null)"
+  res="$(curl -s -L -A "$ua" --max-time "$TIMEOUT" -o "$out" -w '%{http_code} %{url_effective}' "$target" </dev/null 2>/dev/null)"
   FETCH_CODE="${res%% *}"
   FETCH_EFFECTIVE="${res#* }"
   [ -z "$FETCH_CODE" ] && FETCH_CODE="000"
@@ -710,52 +721,135 @@ extract_js_paths() {
     | sed -E 's/^(src|href)=["'"'"']//; s/["'"'"']$//'
 }
 
+# Host of a URL (lowercase, no port).
+_host_of() { echo "$1" | awk -F/ '{print $3}' | sed -E 's/:.*$//' | tr '[:upper:]' '[:lower:]'; }
+
+# In-scope test: same host or a subdomain of $DOMAIN (unless --js-third-party).
+_in_scope() {
+  [ "$JS_THIRD_PARTY" -eq 1 ] && return 0
+  local h="$1" d="${DOMAIN,,}"
+  [ -z "$h" ] && return 1
+  [ "$h" = "$d" ] || [[ "$h" == *".$d" ]]
+}
+
+# Should we read this asset to look for more references? Yes for text assets
+# (js/css/json/map/html) and for HTML-looking routes (trailing slash or a last
+# path segment with no extension); no for images/fonts/binaries.
+_is_text_asset() {
+  local p="${1%%\?*}"
+  case "$p" in
+    *.js|*.mjs|*.cjs|*.css|*.json|*.map|*.html|*.htm) return 0 ;;
+    */) return 0 ;;
+  esac
+  case "${p##*/}" in *.*) return 1 ;; *) return 0 ;; esac
+}
+
+# Extract candidate asset paths referenced inside a downloaded file. Emits one
+# raw reference per line (quoted or url()-wrapped strings that end in a known
+# web-asset extension). Resolution to absolute URLs happens in _resolve_refs.
+ASSET_EXT='js|mjs|cjs|css|avif|bmp|gif|ico|jpe?g|png|svg|webp|woff2?|ttf|otf|eot|json|map|html?'
+extract_asset_refs() {
+  grep -aoE "[\"'\`(][^\"'\`() ]+\.(${ASSET_EXT})(\?[^\"'\`() ]*)?[\"'\`)]" "$1" 2>/dev/null \
+    | sed -E "s/^.//; s/.\$//" | grep -v '^$'
+}
+
+# Resolve raw references (stdin) against a referrer URL -> absolute http(s) URLs.
+# One python call per file (urllib.parse.urljoin); -I isolates the interpreter.
+_resolve_refs() {
+  python3 -I -c '
+import sys
+from urllib.parse import urljoin, urlsplit
+base = sys.argv[1]
+for line in sys.stdin:
+    r = line.strip()
+    if not r or r.startswith(("data:", "blob:", "#", "${", "mailto:")):
+        continue
+    u = urljoin(base, r).split("#")[0]
+    if urlsplit(u).scheme in ("http", "https"):
+        print(u)
+' "$1"
+}
+
 # ---------------------------------------------------------------------------
-# Mode: -files (extract + DOWNLOAD the JS into the target folder)
+# Mode: -files (recursive asset crawler)
 # ---------------------------------------------------------------------------
+# Breadth-first, level by level: download the page (level 0), read it for
+# referenced assets (JS/CSS/images/...), download those (level 1), then read
+# each downloaded text asset (JS/CSS/map/...) for further references (level 2),
+# and so on — the way a Vite/webpack SPA loads its lazy chunks. Files are
+# mirrored under js/<host>/<server path>. Scope is the target host and its
+# subdomains (see --js-third-party); depth and total are capped by --js-depth
+# and --js-max.
 run_files() {
-  vlog "Fetching home page: $URL"
-  local html
-  html="$(fetch "$URL")"
-  [ -z "$html" ] && { err "Failed to fetch content from $URL"; return 1; }
+  local list="${OUT_FILE:-${RESDIR}/files-js.txt}"
+  local assets="${RESDIR}/assets-all.txt"
+  local failed="${RESDIR}/js-failed.txt"
+  : > "$list"; : > "$assets"; : > "$failed"
 
-  local raw_list final_list
-  raw_list="$(extract_js_paths "$html" | sort -u)"
+  # Seed queue: the page itself, plus any JS already found via gau (-U).
+  local -a queue=("0|${URL}|(start)")
+  declare -A seen=(["$URL"]=1)
+  if [ -s "${RESDIR}/files-js-gau.txt" ]; then
+    while IFS= read -r g; do
+      [ -z "$g" ] && continue
+      [ -n "${seen[$g]:-}" ] && continue
+      seen["$g"]=1; queue+=("1|${g}|(gau)")
+    done < "${RESDIR}/files-js-gau.txt"
+  fi
 
-  final_list=""
-  while IFS= read -r path; do
-    [ -z "$path" ] && continue
-    final_list+="$(resolve_url "$path")"$'\n'
-  done <<< "$raw_list"
-  # Merge with any JS discovered via gau (-U) when that ran first.
-  [ -s "${RESDIR}/files-js-gau.txt" ] && final_list+="$(cat "${RESDIR}/files-js-gau.txt")"$'\n'
-  final_list="$(echo "$final_list" | grep -v '^$' | sort -u)"
+  ok "[files] Recursive crawl of $URL (max depth ${JS_DEPTH}, max files ${JS_MAX})"
+  local count=0 okn=0 failn=0
 
-  local total
-  total=$(echo "$final_list" | grep -c . || true)
-  ok "Unique JS files: $total"
+  while [ "${#queue[@]}" -gt 0 ] && [ "$count" -lt "$JS_MAX" ]; do
+    local item depth url parent
+    item="${queue[0]}"; queue=("${queue[@]:1}")
+    depth="${item%%|*}"; item="${item#*|}"
+    url="${item%%|*}"; parent="${item#*|}"
+    count=$((count + 1))
 
-  local list_path="${OUT_FILE:-${RESDIR}/files-js.txt}"
-  echo "$final_list" > "$list_path"
-  ok "List saved to: $list_path"
+    # Mirror the server path locally: js/<host>/<path>.
+    local rel out
+    rel="$(echo "$url" | sed -E 's#^https?://##; s#\?.*$##; s#/$#/index.html#')"
+    rel="$(echo "$rel" | sed -E 's#[^A-Za-z0-9._/@-]#_#g')"
+    out="${JSDIR}/${rel}"
 
-  local ok_n=0 fail_n=0
-  : > "${RESDIR}/js-failed.txt"
-  while IFS= read -r jsurl; do
-    [ -z "$jsurl" ] && continue
-    local fname
-    fname="$(echo "$jsurl" | sed -E 's#https?://##; s#\?.*$##; s#[^a-zA-Z0-9._-]#_#g')"
-    fetch_to "$jsurl" "${JSDIR}/${fname}"
-    if [ "$FETCH_CODE" = "200" ] && [ -s "${JSDIR}/${fname}" ]; then
-      ok_n=$((ok_n + 1))
-    else
-      fail_n=$((fail_n + 1))
-      echo "$jsurl [HTTP $FETCH_CODE]" >> "${RESDIR}/js-failed.txt"
-      rm -f "${JSDIR}/${fname}" 2>/dev/null
+    fetch_to "$url" "$out"
+    if [ "$FETCH_CODE" != "200" ] || [ ! -s "$out" ]; then
+      failn=$((failn + 1))
+      echo "$url [HTTP $FETCH_CODE] (found in $parent)" >> "$failed"
+      rm -f "$out" 2>/dev/null
+      continue
     fi
-  done <<< "$final_list"
-  ok "JS downloaded to $JSDIR ($ok_n ok, $fail_n failed)"
-  [ "$fail_n" -gt 0 ] && vlog "Failed downloads listed in ${RESDIR}/js-failed.txt"
+    okn=$((okn + 1))
+    echo "$url" >> "$assets"
+    case "${url%%\?*}" in *.js|*.mjs|*.cjs) echo "$url" >> "$list" ;; esac
+    vlog "[$count] level $depth  ${url}  OK  (found in $parent)"
+
+    # Recurse into text assets only, while under the depth cap.
+    [ "$depth" -ge "$JS_DEPTH" ] && continue
+    _is_text_asset "$url" || continue
+    local child child_host
+    while IFS= read -r child; do
+      [ -z "$child" ] && continue
+      [ -n "${seen[$child]:-}" ] && continue
+      child_host="$(_host_of "$child")"
+      if ! _in_scope "$child_host"; then
+        echo "$child" >> "${RESDIR}/assets-third-party.txt"
+        continue
+      fi
+      seen["$child"]=1
+      queue+=("$((depth + 1))|${child}|${url}")
+    done < <(extract_asset_refs "$out" | _resolve_refs "$FETCH_EFFECTIVE" | tr -d '\r' | sort -u)
+  done
+
+  sort -u -o "$list" "$list"
+  sort -u -o "$assets" "$assets"
+  local jscount
+  jscount="$(grep -c . "$list" 2>/dev/null || echo 0)"
+  ok "[files] Crawl done: ${okn} asset(s) downloaded, ${failn} failed, ${jscount} JS file(s)"
+  ok "[files] Mirrored under ${JSDIR}/  | JS list: $list | all assets: $assets"
+  [ "$failn" -gt 0 ] && vlog "Failed downloads listed in $failed"
+  [ "$count" -ge "$JS_MAX" ] && warn "[files] Hit --js-max=${JS_MAX}; raise it to crawl further"
 }
 
 # ---------------------------------------------------------------------------
@@ -1734,6 +1828,9 @@ while [ $# -gt 0 ]; do
     --wordlist-size)    WORDLIST_SIZE="${2:-}"; shift 2 ;;
     --kite-wordlist)    KITE_WORDLIST="${2:-}"; shift 2 ;;
     --seclists)         SECLISTS_DIR="${2:-}"; shift 2 ;;
+    --js-depth)         JS_DEPTH="${2:-}"; shift 2 ;;
+    --js-max)           JS_MAX="${2:-}"; shift 2 ;;
+    --js-third-party)   JS_THIRD_PARTY=1; shift ;;
     --jsfile)           JS_LIST_FILE="${2:-}"; shift 2 ;;
     --no-verify)        SECRET_VERIFY=0; shift ;;
     --gf-pattern)       GF_PATTERN="${2:-}"; shift 2 ;;

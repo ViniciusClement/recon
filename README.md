@@ -17,6 +17,13 @@ logical order, regardless of the order in which the flags were passed.
 
 ## What's new in 5.0
 
+- **Recursive asset crawler (`-f`)** — `--files` no longer stops at the JS linked
+  from the home page. It crawls breadth-first, level by level: download the page,
+  read it for referenced assets, download those, then read each downloaded
+  JS/CSS/map for **further** references (the lazy chunks a Vite/webpack SPA loads),
+  and repeat. Files are mirrored under `js/<host>/<server path>`, same-origin,
+  bounded by `--js-depth` / `--js-max`. This is the discovery that previously had
+  to be done by hand for SPA bundles.
 - **Secret scanning with three engines (`-s`)** — on top of the regex-based
   **SecretFinder**, the script now runs **[TruffleHog](https://github.com/trufflesecurity/trufflehog)**
   (filesystem scan of the downloaded JS, with **live verification** of the
@@ -80,7 +87,7 @@ Leaner, less noisy variant (no directory brute-force):
 
 | Flag | Description |
 |------|-------------|
-| `-f, --files`      | Extract `.js` from the HTML, resolve URLs and download the files |
+| `-f, --files`      | Recursive asset crawler: page → assets → chunks referenced inside them → … (mirrors under `js/<host>/`, same-origin) |
 | `-s, --secret`     | Secret scanning: SecretFinder + TruffleHog (verified) + Gitleaks |
 | `-t, --tech`       | Technology fingerprint + version guess |
 | `-T, --tech-deep`  | Deep fingerprint (WhatWeb) + OWASP security-header analysis |
@@ -108,6 +115,9 @@ Leaner, less noisy variant (no directory brute-force):
 | `--wordlist-size <s>`     | SecLists raft size for `--dirs`: `small\|medium\|large` (default: `medium`) |
 | `--kite-wordlist <file>`  | kiterunner routes file (`.kite`) (default: auto-detect in `./kiterunner/`) |
 | `--seclists <dir>`        | SecLists directory (default: auto-detect) |
+| `--js-depth <n>`          | Max recursion depth for the asset crawler (default: `5`) |
+| `--js-max <n>`            | Max files downloaded per target (default: `2000`) |
+| `--js-third-party`        | Also download out-of-scope assets (CDNs, third parties) |
 | `--no-verify`             | Do not let TruffleHog verify secrets against the provider APIs |
 | `--jsfile <file>`         | Reuse an already-extracted JS list (skips crawling in `--secret`) |
 | `--gf-pattern <name>`     | gf pattern to use (default: `xss`) |
@@ -123,6 +133,41 @@ Leaner, less noisy variant (no directory brute-force):
 | `-v, --verbose`           | Verbose logging to stderr |
 | `-j, --json`              | JSON output (where applicable) |
 | `--no-color`              | Disable colors |
+
+---
+
+## Recursive asset crawler (`-f`)
+
+`--files` mirrors a site's front-end the way the browser loads it — breadth-first,
+level by level:
+
+```
+level 0  /                                  (the HTML page)
+level 1  /assets/index-CJaLPScc.js          (found in /)
+level 1  /assets/index-BT-IQo23.css         (found in /)
+level 2  /assets/App-DCpg0tyl.js            (found in /assets/index-CJaLPScc.js)
+level 3  /assets/sheet-C-u5tW3h.js          (found in /assets/App-DCpg0tyl.js)
+level 3  /tltx/tltx-logopreto.png           (found in /assets/App-DCpg0tyl.js)
+...
+```
+
+Each downloaded **text** asset (JS/MJS/CSS/JSON/map/HTML) is read for more
+references — `import`/`import()`, Vite `__vite__mapDeps`, quoted asset paths,
+`url(...)`, `sourceMappingURL` — which are resolved against the referring file's
+URL and queued. Images, fonts and other binaries are downloaded as **leaves**
+(not parsed further). Everything is mirrored under `js/<host>/<server path>`, so a
+chunk that only another chunk references (never the HTML) is still captured —
+exactly what you'd otherwise collect by hand for a Vite/webpack bundle.
+
+- **Scope**: the target host and its subdomains. Out-of-scope references (CDNs,
+  third parties) are listed in `results/assets-third-party.txt` but not downloaded
+  unless `--js-third-party` is given.
+- **Bounds**: `--js-depth` (default 5) and `--js-max` (default 2000) stop runaway
+  crawls.
+- **Outputs**: `results/files-js.txt` (JS list — also fed to `-s`),
+  `results/assets-all.txt` (every asset downloaded), `results/js-failed.txt`
+  (references that failed, with the file they were found in). The mirror in `js/`
+  is what TruffleHog and Gitleaks then scan under `-s`.
 
 ---
 
@@ -393,10 +438,12 @@ WantedBy=multi-user.target
 ```
 recon_<domain>/
 ├── SUMMARY.md                # per-target summary
-├── js/                       # downloaded .js files
+├── js/<host>/…               # mirrored assets (recursive crawl, -f)
 └── results/
-    ├── files-js.txt          # JS files found
-    ├── js-failed.txt         # JS URLs that failed to download
+    ├── files-js.txt          # JS files found (-f)
+    ├── assets-all.txt        # every asset downloaded (-f)
+    ├── assets-third-party.txt # out-of-scope references, not downloaded (-f)
+    ├── js-failed.txt         # references that failed to download (-f)
     ├── secrets.json          # SecretFinder (with -j)
     ├── trufflehog.jsonl      # TruffleHog findings (Verified=true => live)
     ├── gitleaks.json         # Gitleaks findings
