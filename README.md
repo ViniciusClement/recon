@@ -115,8 +115,8 @@ Leaner, less noisy variant (no directory brute-force):
 | `--wordlist-size <s>`     | SecLists raft size for `--dirs`: `small\|medium\|large` (default: `medium`) |
 | `--kite-wordlist <file>`  | kiterunner routes file (`.kite`) (default: auto-detect in `./kiterunner/`) |
 | `--seclists <dir>`        | SecLists directory (default: auto-detect) |
-| `--js-depth <n>`          | Max recursion depth for the asset crawler (default: `5`) |
-| `--js-max <n>`            | Max files downloaded per target (default: `2000`) |
+| `--js-depth <n>`          | Max recursion depth for the asset crawler (default: `8`) |
+| `--js-max <n>`            | Max files downloaded per target (default: `5000`) |
 | `--js-third-party`        | Also download out-of-scope assets (CDNs, third parties) |
 | `--no-verify`             | Do not let TruffleHog verify secrets against the provider APIs |
 | `--jsfile <file>`         | Reuse an already-extracted JS list (skips crawling in `--secret`) |
@@ -162,8 +162,14 @@ exactly what you'd otherwise collect by hand for a Vite/webpack bundle.
 - **Scope**: the target host and its subdomains. Out-of-scope references (CDNs,
   third parties) are listed in `results/assets-third-party.txt` but not downloaded
   unless `--js-third-party` is given.
-- **Bounds**: `--js-depth` (default 5) and `--js-max` (default 2000) stop runaway
-  crawls.
+- **Bounds**: `--js-depth` (default 8) and `--js-max` (default 5000) stop runaway
+  crawls. For an exhaustive full-site mirror, raise them (e.g. `--js-depth 12
+  --js-max 20000`).
+- **Clean mirror (SPA guard)**: single-page apps answer `200 text/html` (the app
+  shell) for any path that does not exist, so a missing `/assets/x.js` looks like
+  a success. The crawler detects this — a non-HTML path that returns `text/html`
+  is discarded and logged in `js-failed.txt` instead of polluting the mirror with
+  fake files.
 - **Outputs**: `results/files-js.txt` (JS list — also fed to `-s`),
   `results/assets-all.txt` (every asset downloaded), `results/js-failed.txt`
   (references that failed, with the file they were found in). The mirror in `js/`
