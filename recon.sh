@@ -61,8 +61,8 @@ SELF_UPDATE=1                # update script/templates/DBs before recon (--no-se
 HISTORY_DIR="${HISTORY_DIR:-./history}"  # run history (read by the dashboard)
 
 # Recursive asset crawler (-f)
-JS_DEPTH="${JS_DEPTH:-5}"          # max recursion depth (page = 0, its assets = 1, ...)
-JS_MAX="${JS_MAX:-2000}"           # hard cap on files downloaded per target
+JS_DEPTH="${JS_DEPTH:-8}"          # max recursion depth (page = 0, its assets = 1, ...)
+JS_MAX="${JS_MAX:-5000}"           # hard cap on files downloaded per target
 JS_THIRD_PARTY=0                   # also download out-of-scope (CDN/third-party) assets (--js-third-party)
 
 # Secret scanners (-s)
@@ -683,19 +683,23 @@ fetch_headers() {
 }
 
 # Download <url> to <file> WITHOUT a subshell, so REQ_COUNT is kept.
-# Sets FETCH_CODE (HTTP status, 000 on network error) and FETCH_EFFECTIVE
-# (final URL after redirects).
-FETCH_CODE="000"; FETCH_EFFECTIVE=""
+# Sets FETCH_CODE (HTTP status, 000 on network error), FETCH_EFFECTIVE (final URL
+# after redirects) and FETCH_CTYPE (Content-Type of the response).
+FETCH_CODE="000"; FETCH_EFFECTIVE=""; FETCH_CTYPE=""
 fetch_to() {
-  local target="$1" out="$2" ua res
+  local target="$1" out="$2" ua res rest
   ua="$(current_ua)"
   REQ_COUNT=$((REQ_COUNT + 1))
   vlog "[req #$REQ_COUNT] UA=$ua -> $target"
   mkdir -p "$(dirname "$out")" 2>/dev/null
-  res="$(curl -s -L -A "$ua" --max-time "$TIMEOUT" -o "$out" -w '%{http_code} %{url_effective}' "$target" </dev/null 2>/dev/null)"
-  FETCH_CODE="${res%% *}"
-  FETCH_EFFECTIVE="${res#* }"
+  # content_type is last: it may contain "; charset=..." (with a space), while
+  # http_code and url_effective never contain spaces, so they parse cleanly.
+  res="$(curl -s -L -A "$ua" --max-time "$TIMEOUT" -o "$out" -w '%{http_code} %{url_effective} %{content_type}' "$target" </dev/null 2>/dev/null)"
+  FETCH_CODE="${res%% *}"; rest="${res#* }"
+  FETCH_EFFECTIVE="${rest%% *}"
+  FETCH_CTYPE="${rest#* }"
   [ -z "$FETCH_CODE" ] && FETCH_CODE="000"
+  [ "$FETCH_CTYPE" = "$FETCH_EFFECTIVE" ] && FETCH_CTYPE=""   # no content_type returned
   return 0
 }
 
@@ -744,12 +748,25 @@ _is_text_asset() {
   case "${p##*/}" in *.*) return 1 ;; *) return 0 ;; esac
 }
 
+# Is this URL expected to return HTML? True for .html/.htm, a trailing slash, or
+# an extensionless route. Used to spot the SPA fallback: a non-HTML path (e.g.
+# /assets/x.js) that answers 200 text/html is the app shell, not the real file.
+_expect_html() {
+  local p="${1%%\?*}"
+  case "$p" in *.html|*.htm) return 0 ;; */) return 0 ;; esac
+  case "${p##*/}" in *.*) return 1 ;; *) return 0 ;; esac
+}
+
 # Extract candidate asset paths referenced inside a downloaded file. Emits one
 # raw reference per line (quoted or url()-wrapped strings that end in a known
 # web-asset extension). Resolution to absolute URLs happens in _resolve_refs.
 ASSET_EXT='js|mjs|cjs|css|avif|bmp|gif|ico|jpe?g|png|svg|webp|woff2?|ttf|otf|eot|json|map|html?'
+# The leading/trailing boundary classes also accept whitespace and commas, so a
+# srcset list ("a.png 480w, b.png 800w") yields every variant, not just the
+# first — matching the PS1 mirror's srcset handling. One delimiter char is
+# captured on each side and stripped by sed.
 extract_asset_refs() {
-  grep -aoE "[\"'\`(][^\"'\`() ]+\.(${ASSET_EXT})(\?[^\"'\`() ]*)?[\"'\`)]" "$1" 2>/dev/null \
+  grep -aoE "[\"'\`([:space:],][^\"'\`() ]+\.(${ASSET_EXT})(\?[^\"'\`() ]*)?[\"'\`)[:space:],]" "$1" 2>/dev/null \
     | sed -E "s/^.//; s/.\$//" | grep -v '^$'
 }
 
@@ -827,6 +844,18 @@ run_files() {
       echo "$url [HTTP $FETCH_CODE] (found in $parent)" >> "$failed"
       rm -f "$out" 2>/dev/null
       continue
+    fi
+    # SPA-fallback guard: a non-HTML path that answers 200 text/html is the app
+    # shell served for a missing file, not the real asset — discard it so the
+    # mirror stays clean (same behaviour as the baixar-files PS1 mirror script).
+    if ! _expect_html "$url"; then
+      case "$FETCH_CTYPE" in
+        text/html*)
+          failn=$((failn + 1))
+          echo "$url [HTTP 200 text/html — SPA fallback, file does not exist] (found in $parent)" >> "$failed"
+          rm -f "$out" 2>/dev/null
+          continue ;;
+      esac
     fi
     okn=$((okn + 1))
     echo "$url" >> "$assets"
