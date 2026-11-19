@@ -1,530 +1,249 @@
-# recon.sh - v5.1
+# recon.sh — v5.1
 
-Web reconnaissance in Bash: subdomains, **DNS brute-force with enumdns**,
-historical URLs, `.js` extraction and secret discovery (**SecretFinder +
-TruffleHog + Gitleaks**), technology fingerprinting, probing, **content
-discovery with ffuf + SecLists**, **API route discovery with kiterunner**, `gf`
-filters, **OWASP security-header analysis** and **automatic vulnerability
-validation**.
+A single-file **web reconnaissance** toolkit in Bash. It chains the tools you'd
+otherwise run by hand into one combinable pipeline:
 
-Modes are **combinable** in a single run and the pipeline always executes in a
-logical order, regardless of the order in which the flags were passed.
+- **Subdomains** (sublist3r / crt.sh) and **DNS brute-force** (enumdns)
+- **JS crawling** — recursively mirror a site's front-end (SPA-aware)
+- **Secrets** in that JS (SecretFinder + TruffleHog *verified* + Gitleaks)
+- **JS dependencies → CVEs** (versions from bundles → OSV.dev)
+- **Tech fingerprint** + **OWASP header** analysis + **vulnerability validation**
+  (WPScan / Nuclei / searchsploit)
+- **Content & API discovery** (ffuf + SecLists, kiterunner), historical URLs (gau)
+- A **web dashboard** with per-run history and 🆕 new-finding detection
 
+Modes are **combinable** and always run in a sensible order, whatever order you
+pass the flags in.
+
+```bash
+./recon.sh -u https://target.com/ [modes...] [options]
 ```
-./recon.sh -u <URL> [modes...] [options]
-```
+
+> **Authorized testing only.** See [Legal notice](#legal-notice).
 
 ---
 
-## What's new in 5.1
+## Install
 
-- **DNS brute-force with enumdns (`-B`)** — the new `--brute` mode adds
-  subdomain brute-forcing powered by
-  **[enumdns](https://github.com/helviojunior/enumdns)**, a modular Go DNS
-  recon tool. recon.sh does **not** reimplement the resolution logic: it clones
-  and builds enumdns into `./enumdns/` (via `--install-deps`, needs **Go 1.23+**)
-  and wraps `enumdns brute`, so all of enumdns's own strategy runs upstream —
-  wordlist engine, SOA-per-zone resolution, A/AAAA/CNAME records, cloud/ASN
-  fingerprinting, quick mode, and custom resolvers. The wordlist falls back from
-  `--brute-wordlist` → `-w` → a SecLists `Discovery/DNS` list, and results land in
-  `results/dns-brute.txt`. Tune it with `--brute-quick`, `--resolver <ip>`, and
-  `--enumdns-args` (raw passthrough). A release binary from enumdns's GitHub
-  releases is an alternative to building from source.
+```bash
+git clone https://github.com/ViniciusClement/recon.git
+cd recon
+chmod +x recon.sh
+
+./recon.sh --check           # show what's installed / missing
+./recon.sh --install-deps    # install what recon can install, then exit
+```
+
+`--install-deps` sets up the things recon bundles locally (Python modules,
+SecretFinder, SecLists, kiterunner routes, and **enumdns** — cloned + built into
+`./enumdns/`, needs **Go 1.23+**). External tools (gau, httpx, naabu, ffuf,
+nuclei, whatweb, wpscan…) are installed per their own instructions — run
+`--check` to see the exact command for each. See [Dependencies](#dependencies).
+
+Base requirements: `bash`, `curl`, `python3`, `git`.
 
 ---
 
-## What's new in 5.0
-
-- **Recursive asset crawler (`-f`)** — `--files` no longer stops at the JS linked
-  from the home page. It crawls breadth-first, level by level: download the page,
-  read it for referenced assets, download those, then read each downloaded
-  JS/CSS/map for **further** references (the lazy chunks a Vite/webpack SPA loads),
-  and repeat. Files are mirrored under `js/<host>/<server path>`, same-origin,
-  bounded by `--js-depth` / `--js-max`. This is the discovery that previously had
-  to be done by hand for SPA bundles.
-- **Secret scanning with three engines (`-s`)** — on top of the regex-based
-  **SecretFinder**, the script now runs **[TruffleHog](https://github.com/trufflesecurity/trufflehog)**
-  (filesystem scan of the downloaded JS, with **live verification** of the
-  secrets it finds against the provider APIs) and
-  **[Gitleaks](https://github.com/gitleaks/gitleaks)** (regex + entropy). The
-  results are cross-checked: any Gitleaks hit on the same file+line as a
-  TruffleHog-**verified** secret is flagged as *confirmed*. A consolidated,
-  value-redacted report is written to `results/secrets-all.txt`.
-- **Content discovery with ffuf + SecLists (`-d`)** — `--dirs` now uses
-  **[ffuf](https://github.com/ffuf/ffuf)** with a **SecLists** wordlist by
-  default (no `-w` required). dirsearch is kept only as a fallback when ffuf is
-  not installed.
-- **API route discovery with kiterunner (`-k`)** — the new `--kite` mode runs
-  **[kiterunner](https://github.com/assetnote/kiterunner)** against the target
-  using Assetnote's compiled routes (`.kite`) plus a SecLists API wordlist.
-- **Tool-integration review/fixes** — WPScan now runs with a configurable
-  detection mode and `--force` (so it does not abort when it is unsure the site
-  is WordPress, since we already detected it) and request/connect timeouts;
-  Nuclei also exports JSONL, disables its mid-run auto-update (`-duc`, since
-  self-update already refreshes templates) and accepts extra tags
-  (`--nuclei-tags`); **httpx** is resolved to ProjectDiscovery's binary even when
-  the Python `httpx` CLI shadows the name (Kali ships it as `httpx-toolkit`).
-- **Everything translated to English** (script, dashboard and this README).
-- **SecLists / kiterunner routes auto-detected and installable** via
-  `--install-deps`.
-
-Everything from 4.0 is still here: two-phase preflight, OWASP header analysis,
-automatic WordPress→WPScan and Nginx/Apache→Nuclei/searchsploit validation,
-self-update for a daily cron, per-run history snapshots with 🆕 new-finding
-detection, the `dashboard.py` web panel, and the consolidated reports.
-
----
-
-## Best command
-
-Full pipeline (fingerprint + tech-deep + OWASP headers + content discovery + vuln validation):
+## Quick examples
 
 ```bash
-./recon.sh -u https://target.com/ --all --rotate-agent -v
+# Everything, one target
+./recon.sh -u https://target.com/ --all -v
+
+# Crawl the JS and hunt secrets in it
+./recon.sh -u https://target.com/ -f -s
+
+# JS dependencies + known CVEs (auto-crawls first)
+./recon.sh -u https://target.com/ -J
+
+# DNS brute-force the domain
+./recon.sh -u https://target.com/ -B
+
+# Tech + deep fingerprint + OWASP headers (vuln validation runs automatically)
+./recon.sh -u https://target.com/ -T
+
+# Attack-surface map: subdomains + DNS brute + port/live probe
+./recon.sh -u https://target.com/ -S -B -p
+
+# Content & API discovery
+./recon.sh -u https://target.com/ -d -k
+
+# A whole list of targets (one per line; a liveness preflight runs first)
+./recon.sh -l targets.txt -S -U -f -T -p -v
 ```
 
-For a list of targets (the two-phase preflight runs automatically):
-
-```bash
-./recon.sh -l all-sites.txt -U -f -s -T -p -v --rotate-agent
-```
-
-Leaner, less noisy variant (no directory brute-force):
-
-```bash
-./recon.sh -u https://target.com/ -S -U -f -T -p -v
-```
-
-Attack-surface mapping — subdomains + DNS brute-force + probing:
-
-```bash
-./recon.sh -u https://target.com/ -S -B -p -v
-```
-
-> `--all` already includes `-T`, `-d`, `-k` and the vulnerability-validation
-> stage — no need to repeat them. API tokens are requested at the start and the
-> preflight runs before any module.
+Targets can be a bare domain or a full URL; `-u` is repeatable and combines with
+`-l`. Each target writes to its own `./recon_<domain>/` folder.
 
 ---
 
 ## Modes (combinable)
 
-| Flag | Description |
-|------|-------------|
-| `-f, --files`      | Recursive asset crawler: page → assets → chunks referenced inside them → … (mirrors under `js/<host>/`, same-origin) |
-| `-s, --secret`     | Secret scanning: SecretFinder + TruffleHog (verified) + Gitleaks |
+| Flag | Does |
+|------|------|
+| `-f, --files`      | Recursively **download** the site's JS/CSS/images (SPA-aware mirror under `js/`) |
+| `-s, --secret`     | Find secrets in the downloaded JS (SecretFinder + TruffleHog *verified* + Gitleaks) |
+| `-J, --libs`       | **JS dependencies + versions + CVEs** (OSV.dev; retire.js if installed) |
 | `-t, --tech`       | Technology fingerprint + version guess |
 | `-T, --tech-deep`  | Deep fingerprint (WhatWeb) + OWASP security-header analysis |
 | `-S, --subdomains` | Enumerate subdomains (sublist3r; crt.sh fallback) |
-| `-B, --brute`      | DNS brute-force with [enumdns](https://github.com/helviojunior/enumdns) (cloned + built into `./enumdns/`) |
-| `-U, --urls`       | Collect historical URLs for the domain (gau) |
-| `-p, --probe`      | Port scan (naabu, top 100) + live hosts/URLs (httpx) |
-| `-d, --dirs`       | Content discovery with ffuf + SecLists (dirsearch fallback) |
-| `-k, --kite`       | API route discovery with kiterunner (Assetnote routes + SecLists) |
-| `-g, --gf`         | Filter collected URLs for dangerous patterns (gf + Gf-Patterns) |
-| `-a, --all`        | Run every available module, in logical order |
+| `-B, --brute`      | **DNS brute-force** with enumdns |
+| `-U, --urls`       | Historical URLs for the domain (gau) |
+| `-p, --probe`      | Port scan (naabu top 100) + live hosts (httpx) |
+| `-d, --dirs`       | Content discovery — ffuf + SecLists (dirsearch fallback) |
+| `-k, --kite`       | API route discovery — kiterunner |
+| `-g, --gf`         | Flag dangerous URLs (gf + Gf-Patterns) |
+| `-a, --all`        | Run every module, in order |
 
-**Canonical pipeline order** (independent of flag order):
-`subdomains → brute → urls → files → tech → tech-deep → secret → probe → dirs → kite → gf → vulnerability validation`.
+**Pipeline order:** subdomains → brute → urls → files → tech → tech-deep →
+secret → libs → probe → dirs → kite → gf → vulnerability validation.
 
----
-
-## Options
-
-| Flag | Description |
-|------|-------------|
-| `-u, --url <URL>`         | Target URL (repeatable `-u`; combines with `-l`) |
-| `-l, --list <file>`       | File with a list of targets, one per line (bare domain or URL; `#` = comment) |
-| `-o, --output <file>`     | Specific output file (ignored with multiple targets) |
-| `-w, --wordlist <file>`   | Wordlist for `--dirs` (default: SecLists `raft-<size>-directories.txt`) |
-| `--wordlist-size <s>`     | SecLists raft size for `--dirs`: `small\|medium\|large` (default: `medium`) |
-| `--kite-wordlist <file>`  | kiterunner routes file (`.kite`) (default: auto-detect in `./kiterunner/`) |
-| `--brute-wordlist <file>` | DNS wordlist for `--brute` (default: `-w`, then SecLists `Discovery/DNS/subdomains-top1million-5000.txt`) |
-| `--brute-quick`           | enumdns quick mode — resolve A records only (`-Q`) |
-| `--resolver <ip>`         | DNS server enumdns should query (`-s`; default: system resolver) |
-| `--enumdns-args <str>`    | Extra raw args passed through to `enumdns brute` (e.g. `"--allow-tld --write-jsonl"`) |
-| `--seclists <dir>`        | SecLists directory (default: auto-detect) |
-| `--js-depth <n>`          | Max recursion depth for the asset crawler (default: `8`) |
-| `--js-max <n>`            | Max files downloaded per target (default: `5000`) |
-| `--js-third-party`        | Also download out-of-scope assets (CDNs, third parties) |
-| `--no-verify`             | Do not let TruffleHog verify secrets against the provider APIs |
-| `--jsfile <file>`         | Reuse an already-extracted JS list (skips crawling in `--secret`) |
-| `--gf-pattern <name>`     | gf pattern to use (default: `xss`) |
-| `--env <file>`            | `.env` file with API keys (default: `./.env`) |
-| `--wpscan-enum <e>`       | WPScan enumeration (default: `vp,vt,u`) |
-| `--wpscan-detection <m>`  | WPScan plugin/theme detection: `passive\|mixed\|aggressive` (default: `mixed`) |
-| `--nuclei-tags <t>`       | Extra nuclei tags (comma-separated) added to the detected ones |
-| `--no-vuln`               | Disable vulnerability validation (wpscan/nuclei/searchsploit) |
-| `--no-preflight`          | Skip Phase 1 liveness; all targets go straight to the modules |
-| `--no-self-update`        | Do not update the script/nuclei-templates/WPScan DB/Exploit-DB before running |
-| `--rotate-agent`          | Rotate the User-Agent every 5 requests |
-| `--timeout <sec>`         | Per-request timeout (default: `15`) |
-| `-v, --verbose`           | Verbose logging to stderr |
-| `-j, --json`              | JSON output (where applicable) |
-| `--no-color`              | Disable colors |
+Vulnerability validation (WPScan / Nuclei / searchsploit) runs **automatically**
+after `-t`/`-T`; disable it with `--no-vuln`.
 
 ---
 
-## Recursive asset crawler (`-f`)
+## Feature notes & examples
 
-`--files` mirrors a site's front-end the way the browser loads it — breadth-first,
-level by level:
+### DNS brute-force (`-B`, enumdns)
 
-```
-level 0  /                                  (the HTML page)
-level 1  /assets/index-CJaLPScc.js          (found in /)
-level 1  /assets/index-BT-IQo23.css         (found in /)
-level 2  /assets/App-DCpg0tyl.js            (found in /assets/index-CJaLPScc.js)
-level 3  /assets/sheet-C-u5tW3h.js          (found in /assets/App-DCpg0tyl.js)
-level 3  /tltx/tltx-logopreto.png           (found in /assets/App-DCpg0tyl.js)
-...
-```
-
-Each downloaded **text** asset (JS/MJS/CSS/JSON/map/HTML) is read for more
-references — `import`/`import()`, Vite `__vite__mapDeps`, quoted asset paths,
-`url(...)`, `sourceMappingURL` — which are resolved against the referring file's
-URL and queued. Images, fonts and other binaries are downloaded as **leaves**
-(not parsed further). Everything is mirrored under `js/<host>/<server path>`, so a
-chunk that only another chunk references (never the HTML) is still captured —
-exactly what you'd otherwise collect by hand for a Vite/webpack bundle.
-
-- **Scope**: the target host and its subdomains. Out-of-scope references (CDNs,
-  third parties) are listed in `results/assets-third-party.txt` but not downloaded
-  unless `--js-third-party` is given.
-- **Bounds**: `--js-depth` (default 8) and `--js-max` (default 5000) stop runaway
-  crawls. For an exhaustive full-site mirror, raise them (e.g. `--js-depth 12
-  --js-max 20000`).
-- **Clean mirror (SPA guard)**: single-page apps answer `200 text/html` (the app
-  shell) for any path that does not exist, so a missing `/assets/x.js` looks like
-  a success. The crawler detects this — a non-HTML path that returns `text/html`
-  is discarded and logged in `js-failed.txt` instead of polluting the mirror with
-  fake files.
-- **Outputs**: `results/files-js.txt` (JS list — also fed to `-s`),
-  `results/assets-all.txt` (every asset downloaded), `results/js-failed.txt`
-  (references that failed, with the file they were found in). The mirror in `js/`
-  is what TruffleHog and Gitleaks then scan under `-s`.
-
----
-
-## Secret scanning (`-s`)
-
-Three engines run over the target, each covering what the others miss:
-
-| Engine | Input | What it does |
-|--------|-------|--------------|
-| **SecretFinder** | the downloaded files in `js/` (the URL only as a fallback when a file was not mirrored) | Regex set for API keys/tokens embedded in JavaScript |
-| **TruffleHog**   | the downloaded files (`js/`) | 800+ detectors, and **live-verifies** each secret against the provider's API (disable with `--no-verify`) |
-| **Gitleaks**     | the downloaded files (`js/`) | Regex + Shannon-entropy detection |
-
-All three read the files `-f` already downloaded, so extraction is **offline** —
-the only network traffic in `-s` is TruffleHog's optional verification (disable
-it with `--no-verify`). Run `-f` before `-s` (or let `-s` trigger the crawl); if
-you pass a `--jsfile` list without a crawl, SecretFinder falls back to fetching
-each URL.
-
-The script cross-checks the two filesystem scanners: a Gitleaks finding that
-lands on the same `file:line` as a TruffleHog **verified** secret is marked
-`CONFIRMED` in the consolidated report. Outputs:
-
-- `results/trufflehog.jsonl` — one JSON object per TruffleHog finding (`"Verified":true` = live/valid).
-- `results/gitleaks.json` — Gitleaks JSON report.
-- `results/secrets-all.txt` — consolidated, human-readable report with **values redacted** (first/last 4 chars only).
-
-> A **verified** secret is live and valid right now — triage it immediately.
-> The run also records how many verified secrets each target had, into the
-> history and the dashboard.
-
----
-
-## Content discovery (`-d`) — ffuf + SecLists
-
-`--dirs` fuzzes `URL/FUZZ` with ffuf and a SecLists wordlist. It no longer
-requires `-w`: when none is given it uses
-`SecLists/Discovery/Web-Content/raft-<size>-directories.txt`
-(`--wordlist-size small|medium|large`, default `medium`). `-w` still overrides it.
-
-Equivalent command run internally:
+recon.sh **wraps the real [enumdns](https://github.com/helviojunior/enumdns)
+binary** (cloned + built into `./enumdns/`) and runs `enumdns brute` — you get
+enumdns's full resolution engine, not a bash reimplementation.
 
 ```bash
-ffuf -u "$URL/FUZZ" -w "$WORDLIST" -mc all -fc 404 -ac \
-     -recursion -recursion-depth 1 -t 40 -timeout "$TIMEOUT" \
-     -H "User-Agent: <rotating>" -of json -o results/ffuf.json -s
+./recon.sh -u target.com -B                                  # default wordlist
+./recon.sh -u target.com -B --brute-wordlist words.txt       # custom wordlist
+./recon.sh -u target.com -B --brute-quick --resolver 8.8.8.8 # A-only, custom DNS
+./recon.sh -u target.com -B --enumdns-args "--allow-tld"     # pass raw enumdns flags
 ```
 
-The JSON is converted to `results/dirs.txt` (`status  url  size`). If ffuf is
-not installed, the script falls back to **dirsearch**.
+Wordlist resolves from `--brute-wordlist` → `-w` → a SecLists `Discovery/DNS`
+list. Output: `results/dns-brute.txt`.
 
----
+### Full-site mirror (`-f`)
 
-## API route discovery (`-k`) — kiterunner
-
-`--kite` probes the target for API routes with kiterunner (`kr`):
+Breadth-first, same-origin crawl that downloads JS/CSS/images and follows
+references inside each text asset (Vite/webpack lazy chunks, `srcset`, `url()`,
+sourcemaps). It drops SPA fallbacks (a missing path that returns `200 text/html`)
+so the mirror stays clean.
 
 ```bash
-# Pass 1: Assetnote compiled routes
-kr scan "$URL" -w <routes.kite> -x 5 -j 100 --fail-status-codes 400,404,403,501,502,426
-# Pass 2: plain SecLists API wordlist
-kr brute "$URL" -w <SecLists .../api/api-endpoints.txt> -x 5 -j 100 ...
+./recon.sh -u target.com -f                                  # default: depth 8, 5000 files
+./recon.sh -u target.com -f --js-depth 12 --js-max 20000     # exhaustive full-site mirror
+./recon.sh -u target.com -f --js-third-party                 # also pull CDN/3rd-party assets
 ```
 
-Raw output is saved to `results/kiterunner.txt` and the discovered routes are
-extracted to `results/api-routes.txt`. The `.kite` routes file is auto-detected
-in `./kiterunner/` (download `routes-small.kite` with `--install-deps`, or point
-at one with `--kite-wordlist`).
+Output: mirror under `js/<host>/…`, `results/files-js.txt`, `results/assets-all.txt`.
 
----
+### JS dependencies & CVEs (`-J`)
 
-## Vulnerability validation
-
-Runs **at the end of the recon**, automatically, whenever a fingerprint ran
-(`-t` and/or `-T`). Disable with `--no-vuln`.
-
-| Detection | Tool | What it does |
-|-----------|------|--------------|
-| WordPress      | **WPScan**       | Enumerates vulnerable plugins/themes and users. Uses `WPSCAN_API_TOKEN` when available. |
-| Nginx / Apache | **Nuclei**       | Runs technology-tag templates + known CVEs, filtered by severity. |
-| Nginx / Apache | **searchsploit** | Maps `version → known exploits` (local Exploit-DB, complementary). |
-
-Equivalent commands fired internally:
+Inventories the JS libraries a site ships and flags vulnerable versions. Versions
+come from inlined `package.json` manifests, `/*! jQuery v… */` / `ng-version=…`
+banners and `node_modules/<pkg>/` paths; each `name@version` is checked against
+**[OSV.dev](https://osv.dev)** for CVEs.
 
 ```bash
-# WordPress
-wpscan --url "$URL" --enumerate vp,vt,u --detection-mode mixed --plugins-detection mixed \
-       --random-user-agent --stealthy --force --ignore-main-redirect \
-       --disable-tls-checks --request-timeout "$TIMEOUT" --connect-timeout "$TIMEOUT" \
-       --api-token "$WPSCAN_API_TOKEN"
-
-# Nginx / Apache
-nuclei -u "$URL" -o results/nuclei.txt -jsonl-export results/nuclei.jsonl -stats \
-       -timeout "$TIMEOUT" -retries 1 -rl 50 -fr -mr 5 -duc \
-       -severity low,medium,high,critical -tags nginx,apache
-searchsploit nginx <version>
+./recon.sh -u target.com -J                    # crawl (if needed) + deps + CVEs
+./recon.sh -u target.com -f -J                 # explicit crawl, then analyse
+./recon.sh -u target.com -J --no-cve-lookup    # offline inventory only
 ```
 
-> WPScan enumeration is tunable: `--wpscan-enum vp,vt,tt,u` (or `at` for all
-> themes) and `--wpscan-detection passive|mixed|aggressive`. Extra nuclei tags
-> can be added with `--nuclei-tags`. `PDCP_API_KEY` is not turned into a flag —
-> nuclei reads it from the environment for the optional ProjectDiscovery Cloud
-> upload.
+Privacy: only public **package names/versions** are sent to OSV.dev — never the
+target URL or any of your data. Outputs: `results/js-libs.txt`,
+`results/js-libs.json`, `results/js-dependencies-report.md`.
 
----
+### Secret scanning (`-s`)
 
-## API keys (`.env`)
-
-Keys are **requested at the start** of the run (hidden input) and saved to
-`./.env` with mode `600`. On later runs they are loaded automatically (safe
-parsing, no `source`).
-
-| Variable | Use | Required |
-|----------|-----|----------|
-| `WPSCAN_API_TOKEN` | WPScan vulnerability database (https://wpscan.com/api) | No (without it, limited results) |
-| `PDCP_API_KEY`     | ProjectDiscovery/Nuclei (optional upload) | No |
-
-> **Add `.env` to `.gitignore`** so the tokens are never committed. You can also
-> point at another file with `--env /path/to/file.env`.
-
----
-
-## Dependencies
+Runs over the downloaded JS mirror (auto-crawls if needed). TruffleHog
+**live-verifies** each secret against the provider API — a *verified* secret is
+valid right now, triage it immediately. Consolidated to `results/secrets-all.txt`.
 
 ```bash
-./recon.sh --check          # check tools, Python modules, wordlists and API keys
-./recon.sh --install-deps   # install what's missing (Python + SecretFinder + SecLists + kiterunner routes + enumdns) and exit
+./recon.sh -u target.com -f -s                 # crawl deep, then scan
+./recon.sh -u target.com -s --no-verify        # skip live verification
 ```
-
-| Flag | Description |
-|------|-------------|
-| `--check`        | Check all tools/modules and exit |
-| `--install-deps` | Install what's missing and exit |
-| `--yes`          | Answer "yes" to installs (non-interactive) |
-| `--no-install`   | Never install anything automatically |
-| `-h, --help`     | This help |
-
-### External tools
-
-| Tool | Install |
-|------|---------|
-| Sublist3r    | `git clone https://github.com/aboul3la/Sublist3r.git` |
-| gau          | `go install github.com/lc/gau/v2/cmd/gau@latest` |
-| httpx        | `sudo apt install httpx-toolkit` (Kali) or `go install github.com/projectdiscovery/httpx/cmd/httpx@latest` |
-| naabu        | `go install github.com/projectdiscovery/naabu/v2/cmd/naabu@latest` (needs `libpcap-dev`) |
-| **ffuf**     | `go install github.com/ffuf/ffuf/v2@latest` (or `sudo apt install ffuf`) |
-| **kiterunner** (`kr`) | release binary from https://github.com/assetnote/kiterunner/releases (or clone + `make build`) |
-| **SecLists** | `sudo apt install seclists` (or `--install-deps` clones into `./SecLists`) |
-| **TruffleHog** | `sudo apt install trufflehog` (or a release from https://github.com/trufflesecurity/trufflehog/releases) |
-| **Gitleaks** | `sudo apt install gitleaks` (or `go install github.com/zricethezav/gitleaks/v8@latest`) |
-| dirsearch    | `git clone https://github.com/maurosoria/dirsearch.git` (ffuf fallback) |
-| gf           | `go install github.com/tomnomnom/gf@latest` (+ `git clone https://github.com/1ndianl33t/Gf-Patterns ~/.gf`) |
-| WhatWeb      | `sudo apt install whatweb` (or `gem install whatweb`) |
-| WPScan       | `sudo apt install wpscan` (or `gem install wpscan`) |
-| Nuclei       | `go install github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest` |
-| searchsploit | `sudo apt install exploitdb` |
-| **enumdns** (`-B`) | `--install-deps` clones + builds it into `./enumdns/` (needs **Go 1.23+**); or a release binary from https://github.com/helviojunior/enumdns/releases |
-
-> On Kali the Python `httpx` CLI occupies the `httpx` name; the script detects
-> ProjectDiscovery's binary (often `httpx-toolkit`) and tells you in `--check`
-> which one it will use.
->
-> Go tools need Go installed (`sudo apt install golang-go`) and `$HOME/go/bin`
-> on `PATH`. `--install-deps` clones SecretFinder and SecLists, downloads the
-> kiterunner routes, and clones + builds **enumdns** into `./enumdns/` (if Go is
-> present), but does **not** install Sublist3r/Go/other external tools.
 
 ---
 
-## Two-phase preflight
+## Common options
 
-When there is more than one target (`-l`), recon runs in **two phases**:
+| Option | Meaning |
+|--------|---------|
+| `-u, --url <URL>` / `-l, --list <file>` | Target(s); `-u` repeatable, `-l` is one per line (`#` = comment) |
+| `-o, --output <file>` | Specific output file (ignored with multiple targets) |
+| `-w, --wordlist <file>` / `--wordlist-size <s>` | Wordlist for `-d` (SecLists raft `small\|medium\|large`) |
+| `--brute-wordlist <f>` / `--brute-quick` / `--resolver <ip>` / `--enumdns-args <s>` | `-B` tuning |
+| `--no-cve-lookup` | `-J`: inventory only, no OSV.dev (offline) |
+| `--js-depth <n>` / `--js-max <n>` / `--js-third-party` | `-f` crawl bounds & scope (default 8 / 5000) |
+| `--no-verify` | `-s`: don't live-verify secrets |
+| `--no-vuln` | Disable the WPScan/Nuclei/searchsploit stage |
+| `--timeout <sec>` | Per-request timeout (default 15) |
+| `--rotate-agent` | Rotate the User-Agent every 5 requests |
+| `--no-self-update` | Skip updating the script / CVE databases before running |
+| `-v, --verbose` · `-j, --json` · `--no-color` | Logging / output |
+| `--check` · `--install-deps` · `--yes` · `--no-install` | Dependency management |
 
-**Phase 1 — liveness scan.** *All* targets are checked first with **httpx**
-(curl fallback when httpx is not installed). At the end a summary is printed
-(`N live, M down/invalid of TOTAL`), the live list is saved to
-`./live-targets.txt`, and folders created for dead targets are removed (only if
-empty — data from previous runs is never deleted).
-
-**Phase 2 — modules.** The selected modules run **only on the targets that
-passed Phase 1**. `--no-preflight` skips Phase 1. A host that answers
-`403/401/500` counts as *live* (it responded); only a total non-response
-(timeout, DNS failure, refused connection) is discarded.
-
----
-
-## OWASP security-header analysis
-
-In **`-T/--tech-deep`** mode the script collects the final response headers and
-compares them with the
-[OWASP HTTP Security Response Headers Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/HTTP_Headers_Cheat_Sheet.html):
-security headers that should be present (absence = finding) and
-information-disclosure headers that should be absent (presence = finding).
-Findings are highlighted in the logs (`[owasp-headers]` lines) and written to
-`results/security-headers.txt` (per target) and `./owasp-headers-report.md`
-(consolidated). `X-Frame-Options` is considered satisfied when a
-`Content-Security-Policy` with `frame-ancestors` is present.
-
----
-
-## Self-update, history and 🆕 detection
-
-Meant to run via cron once a day. Before each run (unless `--no-self-update`)
-the script updates itself (`git pull --ff-only`, re-exec'ing with the same
-arguments when a new commit arrives), `nuclei-templates`, the WPScan metadata DB
-and the local Exploit-DB. Each run writes a per-domain snapshot to
-`./history/<domain>/<timestamp>.json` and a line to `./history/index.jsonl`, and
-flags — in the logs and in `SUMMARY.md` — any Nuclei finding or WPScan
-vulnerability that did **not** exist in that domain's previous run:
-
-```
-[!] 🆕 [NEW on fps.example.com] Nuclei: [wordpress-cve-2026-xxxx] [http] [critical] ...
-```
-
-This covers exactly the case of a new CVE affecting a version already seen
-before: since Nuclei runs with freshly updated templates each run, the same
-target on the same version can produce a new finding from one day to the next.
-
----
-
-## Web dashboard (`dashboard.py`)
-
-A separate, dependency-free file (Python 3 standard library only). It reads the
-history in `./history/` and serves an authenticated panel.
-
-```bash
-python3 dashboard.py --set-password   # set user/password (once)
-python3 dashboard.py --port 8765      # start on http://127.0.0.1:8765/
-```
-
-Credentials are stored in `.env` as `DASHBOARD_USER` and `DASHBOARD_PASS_HASH`
-(salted SHA-256 — never in clear text). The default bind is `127.0.0.1`; serve
-TLS directly with `--cert/--key`, or put it behind a reverse proxy. The home
-page lists every domain with its technologies, open ports, Nuclei count,
-**verified secrets**, **API routes** and a **N new** badge; the per-domain page
-shows the full timeline with new findings highlighted. `GET /health` answers
-without authentication.
-
-> ⚠️ Never expose it with `--host 0.0.0.0` without `--cert/--key` and without a
-> reverse proxy: Basic Auth over plain HTTP sends the password in clear text.
-
----
-
-## Running daily via cron
-
-```cron
-0 3 * * * cd /opt/recon && ./recon.sh -l domains.txt -a >> /opt/recon/logs/recon-$(date +\%Y\%m\%d).log 2>&1
-```
-
-Since the script asks for the API keys only the *first* time and then reads them
-from `.env`, cron runs without interaction — as long as `.env` already exists
-with the keys before you schedule it. Run the dashboard permanently via systemd
-(see the `recon-dashboard.service` example below).
-
-```ini
-[Unit]
-Description=recon.sh dashboard
-After=network.target
-
-[Service]
-Type=simple
-User=recon
-WorkingDirectory=/opt/recon
-ExecStart=/usr/bin/python3 dashboard.py --port 8765 --host 127.0.0.1
-Restart=on-failure
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-```
+Run `./recon.sh --help` for the full list.
 
 ---
 
 ## Output
 
-```
-recon_<domain>/
-├── SUMMARY.md                # per-target summary
-├── js/<host>/…               # mirrored assets (recursive crawl, -f)
-└── results/
-    ├── files-js.txt          # JS files found (-f)
-    ├── assets-all.txt        # every asset downloaded (-f)
-    ├── assets-third-party.txt # out-of-scope references, not downloaded (-f)
-    ├── js-failed.txt         # references that failed to download (-f)
-    ├── secrets.json          # SecretFinder (with -j)
-    ├── trufflehog.jsonl      # TruffleHog findings (Verified=true => live)
-    ├── gitleaks.json         # Gitleaks findings
-    ├── secrets-all.txt       # consolidated secrets report (values redacted)
-    ├── tech.txt / tech.json  # fingerprint (-t)
-    ├── whatweb_verbose.txt   # WhatWeb, readable (-T)
-    ├── whatweb.json          # WhatWeb JSON (-T)
-    ├── security-headers.txt  # OWASP header analysis (-T)
-    ├── tech-detected.txt     # techs registered for vuln validation
-    ├── httpx-preflight.txt   # preflight status (Phase 1)
-    ├── subdomains.txt        # subdomains (-S)
-    ├── urls.txt              # historical URLs (-U)
-    ├── probe.txt             # live hosts (-p, httpx)
-    ├── naabu.txt             # open ports, top 100 (-p)
-    ├── ffuf.json / dirs.txt  # content discovery (-d)
-    ├── kiterunner.txt        # kiterunner raw output (-k)
-    ├── api-routes.txt        # extracted API routes (-k)
-    ├── gf-<pattern>.txt       # gf filters (-g)
-    ├── wpscan.txt            # WordPress validation
-    ├── nuclei.txt / .jsonl   # Nginx/Apache validation
-    └── searchsploit.txt      # exploits by version
+Everything for a target lives in `./recon_<domain>/`:
 
-./owasp-headers-report.md    # consolidated OWASP report (all applications)
-./recon-final-report.md      # final consolidated result (all targets)
-./live-targets.txt           # live targets found in Phase 1 (preflight)
-./.env                       # API keys + dashboard credentials (chmod 600)
-./history/
-├── index.jsonl               # global index (all domains, all runs)
-└── <domain>/<timestamp>.json # per-run snapshot (techs, ports, findings...)
-./dashboard.py                # authenticated web panel (history + new findings)
 ```
+recon_target.com/
+├── js/<host>/…               mirrored assets (-f)
+├── SUMMARY.md                per-target summary
+└── results/
+    ├── subdomains.txt  dns-brute.txt      files-js.txt  assets-all.txt
+    ├── secrets-all.txt trufflehog.jsonl   js-dependencies-report.md
+    ├── tech.txt  security-headers.txt  nuclei.txt  wpscan.txt
+    └── ffuf.json  api-routes.txt  urls.txt  probe.txt
+```
+
+A global `./recon-final-report.md` is written across all targets, and per-run
+snapshots go to `./history/` for the dashboard.
+
+---
+
+## Web dashboard
+
+A zero-dependency (stdlib only) web UI over the run history, with per-domain
+timelines and 🆕 new-finding highlighting.
+
+```bash
+python3 dashboard.py --set-password      # once: set user + password (stored hashed in .env)
+python3 dashboard.py --port 8765         # serves on 127.0.0.1 only by default
+```
+
+Expose it only behind TLS: use `--cert/--key` for direct HTTPS, or a reverse
+proxy. Basic-Auth over plain HTTP on a public address leaks the password.
+
+---
+
+## Dependencies
+
+| Tool | Role | Install |
+|------|------|---------|
+| **enumdns** | `-B` DNS brute-force | `--install-deps` (clone + `go build`, Go 1.23+) or a [release binary](https://github.com/helviojunior/enumdns/releases) |
+| **js-deps-cve.py** | `-J` scanner (bundled) | ships with recon; CVE lookup via OSV.dev (stdlib only) |
+| retire.js | optional extra `-J` detector | `npm i -g retire` |
+| SecretFinder / SecLists / kiterunner routes | `-s` / `-d` / `-k` | installed/cloned by `--install-deps` |
+| TruffleHog / Gitleaks | `-s` | `sudo apt install trufflehog gitleaks` (or releases) |
+| Sublist3r / gau / httpx / naabu / ffuf / gf | various | see `--check` for each command |
+| WhatWeb / WPScan / Nuclei / searchsploit | `-T` / vuln validation | see `--check` |
+
+`--install-deps` does **not** install Go, Node, or the Go/Ruby external tools —
+run `./recon.sh --check` and it prints the exact install line for anything missing.
 
 ---
 
 ## Legal notice
 
-This tool is intended for **authorized** testing only. `--all`, `-T`
-(aggression 3), ffuf/kiterunner fuzzing, TruffleHog verification and the
-wpscan/nuclei stage generate significant traffic and are visible in the target's
-logs. Use it only against systems you have explicit written permission to test.
-Misuse is the sole responsibility of whoever runs it.
+This tool is for **authorized security testing and education only**. Only run it
+against systems you own or have **explicit written permission** to test.
+Unauthorized scanning may be illegal. You are responsible for how you use it.
+
+Licensed under the [MIT License](LICENSE).

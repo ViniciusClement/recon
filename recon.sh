@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 #
 # recon.sh (v5.1) - Web recon: JS + secrets (SecretFinder / TruffleHog / Gitleaks)
-#                 + tech fingerprint + content discovery (ffuf / kiterunner /
-#                 SecLists) + DNS brute-force (enumdns) + OWASP header analysis
+#                 + DNS brute-force (enumdns) + JS dependency/CVE analysis
+#                 (OSV.dev) + tech fingerprint + content discovery
+#                 (ffuf / kiterunner / SecLists) + OWASP header analysis
 #                 + vulnerability validation.
 #
 # What's new in v5.1:
@@ -10,6 +11,9 @@
 #     (github.com/helviojunior/enumdns). --install-deps clones + builds it into
 #     ./enumdns/ (needs Go 1.23+); recon.sh wraps `enumdns brute`, keeping all of
 #     enumdns's own resolution strategy upstream.
+#   * -J/--libs: inventory JS dependencies + versions (inlined package.json
+#     manifests, version banners, node_modules paths) and map them to CVEs via
+#     OSV.dev (retire.js used too when installed). Scanner: js-deps-cve.py.
 #
 # What's new in v5:
 #   * -s/--secret also runs TruffleHog (with live verification of the secrets
@@ -98,6 +102,10 @@ BRUTE_RESOLVER="${BRUTE_RESOLVER:-}"      # enumdns -s <dns-server> (set by --re
 ENUMDNS_ARGS="${ENUMDNS_ARGS:-}"          # extra raw args passed through to enumdns brute
 
 SECRETFINDER_PATH="${SECRETFINDER_PATH:-./SecretFinder/SecretFinder.py}"
+
+# JS dependency + CVE analysis (-J/--libs): bundled scanner + OSV.dev lookup
+JS_DEPS_CVE="${JS_DEPS_CVE:-./js-deps-cve.py}"
+CVE_LOOKUP=1                       # query OSV.dev for CVEs; --no-cve-lookup disables
 
 # .env file (API keys) and vuln tool options
 ENV_FILE="${ENV_FILE:-./.env}"
@@ -285,6 +293,7 @@ ${H}MODES${R0} ${D}(combinable; always run in pipeline order)${R0}
   ${F}-f${R0}, ${F}--files${R0}        Recursive asset crawler — page ▸ JS/CSS ▸ the chunks they
                      reference ▸ … mirrored under ${D}js/<host>/${R0} (same-origin)
   ${F}-s${R0}, ${F}--secret${R0}       Secrets — SecretFinder + TruffleHog ${D}(verified)${R0} + Gitleaks
+  ${F}-J${R0}, ${F}--libs${R0}         JS deps + versions + CVEs ${D}(OSV.dev; retire.js if present)${R0}
   ${F}-t${R0}, ${F}--tech${R0}         Technology fingerprint + version guess
   ${F}-T${R0}, ${F}--tech-deep${R0}    Deep fingerprint ${D}(WhatWeb)${R0} + OWASP security-header analysis
   ${F}-S${R0}, ${F}--subdomains${R0}   Enumerate subdomains ${D}(sublist3r; crt.sh fallback)${R0}
@@ -296,7 +305,7 @@ ${H}MODES${R0} ${D}(combinable; always run in pipeline order)${R0}
   ${F}-g${R0}, ${F}--gf${R0}           Flag dangerous URLs ${D}(gf + Gf-Patterns)${R0}
   ${F}-a${R0}, ${F}--all${R0}          Run every module, in logical order
 
-  ${D}Pipeline: subdomains ▸ brute ▸ urls ▸ files ▸ tech ▸ tech-deep ▸ secret ▸${R0}
+  ${D}Pipeline: subdomains ▸ brute ▸ urls ▸ files ▸ tech ▸ tech-deep ▸ secret ▸ libs ▸${R0}
   ${D}          probe ▸ dirs ▸ kite ▸ gf ▸ vulnerability validation${R0}
 
 ${H}TARGETS & OUTPUT${R0}
@@ -328,6 +337,9 @@ ${H}DNS BRUTE-FORCE${R0} ${D}(-B, enumdns)${R0}
 
 ${H}SECRETS${R0} ${D}(-s)${R0}
       ${F}--no-verify${R0}        Do not let TruffleHog verify secrets live
+
+${H}JS DEPENDENCIES${R0} ${D}(-J)${R0}
+      ${F}--no-cve-lookup${R0}    Inventory only — do not query OSV.dev ${D}(offline)${R0}
 
 ${H}VULNERABILITIES${R0} ${D}(auto after -t/-T; disable with --no-vuln)${R0}
       ${F}--wpscan-enum${R0} <e>      WPScan enumeration        ${D}(default: ${WPSCAN_ENUM})${R0}
@@ -681,6 +693,18 @@ check_dependencies() {
     [ "$install" -eq 1 ] && ensure_secretfinder
   fi
 
+  ok "== JS deps + CVEs (-J) =="
+  if [ -f "$JS_DEPS_CVE" ]; then
+    echo "  [ok]      $JS_DEPS_CVE (OSV.dev CVE lookup; --no-cve-lookup for offline)" >&2
+  else
+    echo "  [MISSING] $JS_DEPS_CVE (should ship next to recon.sh)" >&2
+  fi
+  if command -v retire >/dev/null 2>&1; then
+    echo "  [ok]      retire.js ($(command -v retire))" >&2
+  else
+    echo "  [MISSING] retire.js (optional, improves JS CVE detection)  ->  npm i -g retire" >&2
+  fi
+
   ok "== Wordlists =="
   local sl kite
   if sl="$(find_seclists)"; then
@@ -1004,6 +1028,45 @@ run_secret() {
   run_trufflehog
   run_gitleaks
   consolidate_secrets
+}
+
+# ---------------------------------------------------------------------------
+# Mode: -J/--libs (JS dependency inventory + CVE lookup)
+# ---------------------------------------------------------------------------
+# Extracts library names/versions from the downloaded JS mirror (inlined
+# package.json manifests, version banners, node_modules paths) and looks up
+# CVEs via OSV.dev. Also runs retire.js over js/ when it is installed. Needs the
+# -f mirror; builds it first when missing (like run_secretfinder).
+run_libs() {
+  command -v python3 >/dev/null 2>&1 || { err "python3 required for -J/--libs"; return 1; }
+  if [ ! -f "$JS_DEPS_CVE" ]; then
+    err "Scanner not found: $JS_DEPS_CVE (expected next to recon.sh)"
+    return 1
+  fi
+  # Ensure the JS mirror exists (the crawler writes under $JSDIR).
+  if [ ! -d "$JSDIR" ] || [ -z "$(ls -A "$JSDIR" 2>/dev/null)" ]; then
+    warn "[libs] No JS mirror yet; running the crawler (-f) first"
+    run_files
+  fi
+
+  local -a args=( "$JS_DEPS_CVE" --js-dir "$JSDIR" --out-dir "$RESDIR"
+                  --domain "$DOMAIN" --timeout "$TIMEOUT" )
+  [ "$CVE_LOOKUP" -eq 1 ] || args+=( --no-cve-lookup )
+  ok "[libs] Identifying JS dependencies + CVEs"
+  [ "$CVE_LOOKUP" -eq 1 ] && vlog "[libs] CVE lookup via OSV.dev (public package names only; --no-cve-lookup to disable)"
+  python3 "${args[@]}"
+
+  # retire.js: authoritative detection of vulnerable JS served on disk.
+  if command -v retire >/dev/null 2>&1; then
+    ok "[libs] Also running retire.js over ${JSDIR}/"
+    retire --path "$JSDIR" --outputformat json --outputpath "${RESDIR}/retirejs.json" 2>/dev/null \
+      || vlog "[libs] retire.js reported findings or a non-zero status"
+  else
+    vlog "[libs] retire.js not installed (optional): npm i -g retire"
+  fi
+
+  local report="${RESDIR}/js-dependencies-report.md"
+  [ -f "$report" ] && ok "[libs] Report: $report"
 }
 
 run_secretfinder() {
@@ -1994,6 +2057,7 @@ while [ $# -gt 0 ]; do
     -l|--list)          LIST_FILE="${2:-}"; shift 2 ;;
     -f|--files)         add_mode files; shift ;;
     -s|--secret)        add_mode secret; shift ;;
+    -J|--libs)          add_mode libs; shift ;;
     -t|--tech)          add_mode tech; shift ;;
     -T|--tech-deep)     add_mode techdeep; shift ;;
     -S|--subdomains)    add_mode subdomains; shift ;;
@@ -2018,6 +2082,7 @@ while [ $# -gt 0 ]; do
     --js-third-party)   JS_THIRD_PARTY=1; shift ;;
     --jsfile)           JS_LIST_FILE="${2:-}"; shift 2 ;;
     --no-verify)        SECRET_VERIFY=0; shift ;;
+    --no-cve-lookup)    CVE_LOOKUP=0; shift ;;
     --gf-pattern)       GF_PATTERN="${2:-}"; shift 2 ;;
     --env)              ENV_FILE="${2:-}"; shift 2 ;;
     --wpscan-enum)      WPSCAN_ENUM="${2:-}"; shift 2 ;;
@@ -2092,7 +2157,7 @@ fi
 # Validation
 # ---------------------------------------------------------------------------
 [ "${#TARGETS[@]}" -eq 0 ] && { err "Provide at least one target with -u/--url or -l/--list"; usage; exit 1; }
-[ "${#MODES[@]}" -eq 0 ]   && { err "Provide at least one mode (-f, -s, -t, -S, -B, -U, -p, -d, -k, -g or -a)"; usage; exit 1; }
+[ "${#MODES[@]}" -eq 0 ]   && { err "Provide at least one mode (-f, -s, -J, -t, -S, -B, -U, -p, -d, -k, -g or -a)"; usage; exit 1; }
 
 for bin in curl grep sed awk python3; do
   command -v "$bin" >/dev/null 2>&1 || { err "Missing base dependency: $bin"; exit 1; }
@@ -2117,7 +2182,7 @@ fi
 # ---------------------------------------------------------------------------
 # Mode expansion (target-independent) — canonical pipeline order
 # ---------------------------------------------------------------------------
-ORDER=(subdomains brute urls files tech techdeep secret probe dirs kite gf techvuln)
+ORDER=(subdomains brute urls files tech techdeep secret libs probe dirs kite gf techvuln)
 declare -A want=()
 for m in "${MODES[@]}"; do
   if [ "$m" = "all" ]; then
@@ -2225,6 +2290,7 @@ dispatch_modes() {
       techvuln)    run_vuln_validation ;;
       subdomains)  run_subdomains ;;
       brute)       run_enumdns ;;
+      libs)        run_libs ;;
       urls)        run_urls ;;
       probe)       run_probe ;;
       dirs)        run_dirs ;;
@@ -2247,9 +2313,15 @@ _count_lines() { [ -s "$1" ] && grep -c . "$1" 2>/dev/null || echo 0; }
 write_target_summary() {
   local sfile="${OUTDIR}/SUMMARY.md"
   local subd bruten urlsn jsn techn secretsn th_verified dirsn kiten gfn ports wp_line nuclei_matches
+  local libsn libcve
 
   subd="$(_count_lines "${RESDIR}/subdomains.txt")"
   bruten="$(_count_lines "${RESDIR}/dns-brute.txt")"
+  libsn=0; libcve=0
+  if [ -s "${RESDIR}/js-libs.json" ]; then
+    libsn="$(grep -c '"version":' "${RESDIR}/js-libs.json" 2>/dev/null || echo 0)"
+    libcve="$(grep -oE '"CVE-[0-9]{4}-[0-9]+"' "${RESDIR}/js-dependencies-report.md" 2>/dev/null | sort -u | grep -c . || echo 0)"
+  fi
   urlsn="$(_count_lines "${RESDIR}/urls.txt")"
   jsn="$(_count_lines "${RESDIR}/files-js.txt")"
   techn="$(_count_lines "${RESDIR}/tech-detected.txt")"
@@ -2281,6 +2353,7 @@ write_target_summary() {
     echo "|---|---|"
     echo "| Subdomains (-S) | ${subd} |"
     [ "$bruten" -gt 0 ] && echo "| DNS brute-force hits (-B) | ${bruten} |"
+    [ "$libsn" -gt 0 ] && echo "| JS dependencies (-J) | ${libsn} (CVEs: ${libcve}) — see \`results/js-dependencies-report.md\` |"
     echo "| Historical URLs (-U) | ${urlsn} |"
     echo "| JS files (-f) | ${jsn} |"
     echo "| Technologies registered (-t/-T) | ${techn} |"
