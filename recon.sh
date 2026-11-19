@@ -376,6 +376,10 @@ ${H}EXAMPLES${R0}
   $0 ${F}-u${R0} https://target.com/ ${F}-f${R0} ${F}-s${R0} ${F}--js-depth${R0} 8 ${F}-v${R0}
   ${D}# JS dependencies + known CVEs (auto-crawls first)${R0}
   $0 ${F}-u${R0} https://target.com/ ${F}-J${R0}
+  ${D}# DNS brute-force the domain (enumdns; -> results/dns-brute.txt)${R0}
+  $0 ${F}-u${R0} target.com ${F}-B${R0}
+  ${D}#   with a custom wordlist / quick mode / specific resolver${R0}
+  $0 ${F}-u${R0} target.com ${F}-B${R0} ${F}--brute-wordlist${R0} words.txt ${F}--brute-quick${R0} ${F}--resolver${R0} 8.8.8.8
   ${D}# DNS attack surface: subdomains + enumdns brute + recon${R0}
   $0 ${F}-u${R0} https://target.com/ ${F}-S${R0} ${F}-B${R0} ${F}-R${R0}
   ${D}# look-alike / phishing domains (typosquatting)${R0}
