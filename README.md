@@ -1,10 +1,10 @@
-# recon.sh - v5.0
+# recon.sh - v5.1
 
 Web reconnaissance in Bash: subdomains, historical URLs, `.js` extraction and
-secret discovery (**SecretFinder + TruffleHog + Gitleaks**), technology
-fingerprinting, probing, **content discovery with ffuf + SecLists**, **API route
-discovery with kiterunner**, `gf` filters, **OWASP security-header analysis** and
-**automatic vulnerability validation**.
+secret discovery (**SecretFinder + TruffleHog + Gitleaks**), **JS dependency +
+CVE analysis (OSV.dev)**, technology fingerprinting, probing, **content discovery
+with ffuf + SecLists**, **API route discovery with kiterunner**, `gf` filters,
+**OWASP security-header analysis** and **automatic vulnerability validation**.
 
 Modes are **combinable** in a single run and the pipeline always executes in a
 logical order, regardless of the order in which the flags were passed.
@@ -12,6 +12,19 @@ logical order, regardless of the order in which the flags were passed.
 ```
 ./recon.sh -u <URL> [modes...] [options]
 ```
+
+---
+
+## What's new in 5.1
+
+- **JS dependency + CVE analysis (`-J`)** — the new `--libs` mode inventories the
+  JavaScript libraries a site ships (parsing inlined `package.json` manifests,
+  version banners like `/*! jQuery v3.4.1 */` and `ng-version="…"`, and
+  `node_modules/<pkg>/` paths) and maps each `name@version` to known CVEs via the
+  **[OSV.dev](https://osv.dev)** database — with `retire.js` as an optional extra
+  detector. Outputs a readable `results/js-dependencies-report.md`. The CVE
+  lookup sends only public package names/versions (no target or user data);
+  `--no-cve-lookup` keeps it fully offline. Scanner: bundled `js-deps-cve.py`.
 
 ---
 
@@ -89,6 +102,7 @@ Leaner, less noisy variant (no directory brute-force):
 |------|-------------|
 | `-f, --files`      | Recursive asset crawler: page → assets → chunks referenced inside them → … (mirrors under `js/<host>/`, same-origin) |
 | `-s, --secret`     | Secret scanning: SecretFinder + TruffleHog (verified) + Gitleaks |
+| `-J, --libs`       | JS dependencies + versions + CVEs (OSV.dev; retire.js if present) |
 | `-t, --tech`       | Technology fingerprint + version guess |
 | `-T, --tech-deep`  | Deep fingerprint (WhatWeb) + OWASP security-header analysis |
 | `-S, --subdomains` | Enumerate subdomains (sublist3r; crt.sh fallback) |
@@ -119,6 +133,7 @@ Leaner, less noisy variant (no directory brute-force):
 | `--js-max <n>`            | Max files downloaded per target (default: `2000`) |
 | `--js-third-party`        | Also download out-of-scope assets (CDNs, third parties) |
 | `--no-verify`             | Do not let TruffleHog verify secrets against the provider APIs |
+| `--no-cve-lookup`         | `-J`: inventory only — do not query OSV.dev (fully offline) |
 | `--jsfile <file>`         | Reuse an already-extracted JS list (skips crawling in `--secret`) |
 | `--gf-pattern <name>`     | gf pattern to use (default: `xss`) |
 | `--env <file>`            | `.env` file with API keys (default: `./.env`) |
@@ -198,6 +213,54 @@ lands on the same `file:line` as a TruffleHog **verified** secret is marked
 > A **verified** secret is live and valid right now — triage it immediately.
 > The run also records how many verified secrets each target had, into the
 > history and the dashboard.
+
+---
+
+## JS dependencies & CVEs (`-J`)
+
+`--libs` inventories the JavaScript libraries a site ships and flags the ones
+with known vulnerabilities. It runs over the `js/` mirror (the `-f` crawler is
+triggered automatically when the mirror is missing) and extracts versions three
+ways:
+
+1. **Inlined manifests** — modern bundlers (Angular, Vite, webpack) often embed
+   the app's `package.json` data inside a chunk: a `name`/`version` plus a
+   `"dependencies": { "@angular/core": "~19.2.14", ... }` map. These quoted
+   `"package":"range"` pairs are parsed directly — the highest-signal source.
+2. **Version banners / globals** — `/*! jQuery JavaScript Library v3.4.1 */`,
+   `ng-version="19.2.14"`, `Vue.version`, Bootstrap/lodash/moment headers, and
+   generic `Name vX.Y.Z` `@license` banners.
+3. **`node_modules/<pkg>/` paths** left in source maps / webpack output (name
+   only, listed as "version unknown").
+
+Each `name@version` is then checked against the **[OSV.dev](https://osv.dev)**
+database (npm ecosystem) for known advisories, resolved to **CVE IDs** with
+severity. If [`retire.js`](https://github.com/RetireJS/retire.js) is installed it
+is also run over `js/` for served-file detection (`npm i -g retire`).
+
+```bash
+./recon.sh -u https://target.com/ -J            # crawl (if needed) + deps + CVEs
+./recon.sh -u https://target.com/ -f -J         # explicit crawl, then analyse
+./recon.sh -u https://target.com/ -J --no-cve-lookup   # offline inventory only
+```
+
+- **Privacy**: the CVE lookup sends only public **package names and versions** to
+  OSV.dev — never the target URL, host or any user data. `--no-cve-lookup` keeps
+  everything local.
+- **Outputs**: `results/js-libs.txt` (inventory: name, version, source, file),
+  `results/js-libs.json` (structured, with the matched advisory IDs),
+  `results/js-dependencies-report.md` (a readable table of vulnerable packages →
+  CVEs + severity), and `results/retirejs.json` when retire.js ran.
+
+Example report excerpt:
+
+```
+| Package     | Version  | Advisories | CVEs                                  |
+|-------------|----------|-----------:|---------------------------------------|
+| url-parse   | 1.4.0    | 8          | CVE-2018-3774, CVE-2021-27515, ...    |
+| lodash      | 4.17.19  | 4          | CVE-2020-28500, CVE-2021-23337, ...   |
+| jquery      | 3.4.1    | 2          | CVE-2020-11022, CVE-2020-11023        |
+```
 
 ---
 
@@ -324,6 +387,7 @@ parsing, no `source`).
 | WPScan       | `sudo apt install wpscan` (or `gem install wpscan`) |
 | Nuclei       | `go install github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest` |
 | searchsploit | `sudo apt install exploitdb` |
+| retire.js (`-J`, optional) | `npm i -g retire` — optional extra JS CVE detector; `-J` already works without it via OSV.dev |
 
 > On Kali the Python `httpx` CLI occupies the `httpx` name; the script detects
 > ProjectDiscovery's binary (often `httpx-toolkit`) and tells you in `--check`
