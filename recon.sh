@@ -35,6 +35,9 @@
 #   ./recon.sh -u https://site.com/ -d            # ffuf + SecLists raft-medium
 #   ./recon.sh -u https://site.com/ -d -k         # ffuf + kiterunner
 #   ./recon.sh -u https://site.com/ -B            # DNS brute-force (enumdns)
+#   ./recon.sh -u https://site.com/ -R            # DNS recon: records + AD/cloud (enumdns)
+#   ./recon.sh -u https://site.com/ --threat      # typosquatting/phishing domains (enumdns)
+#   ./recon.sh -u https://site.com/ -J            # JS dependencies + CVEs (OSV.dev)
 #   ./recon.sh -u https://site.com/ --all
 #   ./recon.sh -l sites.txt -f -s                 # several targets, one per line
 #   ./recon.sh -l sites.txt -u extra.com -t       # list + an extra target
@@ -334,11 +337,11 @@ ${H}CONTENT DISCOVERY${R0} ${D}(-d / -k)${R0}
       ${F}--kite-wordlist${R0} <f> kiterunner .kite routes       ${D}(default: ${KITE_DIR}/)${R0}
       ${F}--gf-pattern${R0} <name> gf pattern                    ${D}(default: xss)${R0}
 
-${H}DNS BRUTE-FORCE${R0} ${D}(-B, enumdns)${R0}
-      ${F}--brute-wordlist${R0} <f> DNS wordlist                 ${D}(default: -w, then SecLists Discovery/DNS)${R0}
-      ${F}--brute-quick${R0}      Quick mode — A records only ${D}(enumdns -Q)${R0}
-      ${F}--resolver${R0} <ip>    DNS server to query          ${D}(enumdns -s; default: system)${R0}
-      ${F}--enumdns-args${R0} <s> Extra raw args for enumdns ${D}(e.g. "--allow-tld --write-jsonl")${R0}
+${H}DNS / enumdns${R0} ${D}(-B brute, -R recon, --threat)${R0}
+      ${F}--brute-wordlist${R0} <f> DNS wordlist for -B          ${D}(default: -w, then SecLists Discovery/DNS)${R0}
+      ${F}--brute-quick${R0}      -B quick mode — A records only ${D}(enumdns -Q)${R0}
+      ${F}--resolver${R0} <ip>    DNS server to query ${D}(-B/-R; enumdns -s; default: system)${R0}
+      ${F}--enumdns-args${R0} <s> Extra raw args for enumdns ${D}(-B/-R/--threat; e.g. "--allow-tld")${R0}
 
 ${H}SECRETS${R0} ${D}(-s)${R0}
       ${F}--no-verify${R0}        Do not let TruffleHog verify secrets live
@@ -371,6 +374,12 @@ ${H}EXAMPLES${R0}
   $0 ${F}-u${R0} https://target.com/ ${F}--all${R0} ${F}--rotate-agent${R0} ${F}-v${R0}
   ${D}# crawl JS deeply, then scan the mirror for secrets${R0}
   $0 ${F}-u${R0} https://target.com/ ${F}-f${R0} ${F}-s${R0} ${F}--js-depth${R0} 8 ${F}-v${R0}
+  ${D}# JS dependencies + known CVEs (auto-crawls first)${R0}
+  $0 ${F}-u${R0} https://target.com/ ${F}-J${R0}
+  ${D}# DNS attack surface: subdomains + enumdns brute + recon${R0}
+  $0 ${F}-u${R0} https://target.com/ ${F}-S${R0} ${F}-B${R0} ${F}-R${R0}
+  ${D}# look-alike / phishing domains (typosquatting)${R0}
+  $0 ${F}-u${R0} https://target.com/ ${F}--threat${R0}
   ${D}# content + API discovery only${R0}
   $0 ${F}-u${R0} https://target.com/ ${F}-d${R0} ${F}-k${R0}
   ${D}# list of targets (liveness preflight runs first)${R0}
@@ -381,6 +390,8 @@ ${H}EXAMPLES${R0}
 ${H}OUTPUT${R0} ${D}(per target, under ./recon_<domain>/)${R0}
   ${D}js/<host>/…${R0}            mirrored assets        ${D}results/secrets-all.txt${R0}  secrets
   ${D}results/files-js.txt${R0}   JS list                ${D}results/ffuf.json${R0}        dirs
+  ${D}results/dns-brute.txt${R0}  DNS brute (-B)         ${D}results/dns-recon.txt${R0}    DNS recon (-R)
+  ${D}results/threat-analysis.txt${R0} threats (--threat) ${D}results/js-dependencies-report.md${R0} JS CVEs (-J)
   ${D}results/api-routes.txt${R0} API routes             ${D}results/nuclei.txt${R0}       vulns
   ${D}SUMMARY.md${R0}             per-target summary     ${D}./recon-final-report.md${R0}  all targets
   ${D}Dashboard:${R0} python3 dashboard.py --set-password && python3 dashboard.py --port 8765
