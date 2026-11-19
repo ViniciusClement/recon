@@ -15,6 +15,7 @@ kiterunner/*.kite
 kiterunner/*.tar.gz
 Sublist3r/
 dirsearch/
+enumdns/
 
 # Python bytecode
 __pycache__/

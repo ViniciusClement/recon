@@ -1,10 +1,11 @@
-# recon.sh - v5.0
+# recon.sh - v5.1
 
-Web reconnaissance in Bash: subdomains, historical URLs, `.js` extraction and
-secret discovery (**SecretFinder + TruffleHog + Gitleaks**), technology
-fingerprinting, probing, **content discovery with ffuf + SecLists**, **API route
-discovery with kiterunner**, `gf` filters, **OWASP security-header analysis** and
-**automatic vulnerability validation**.
+Web reconnaissance in Bash: subdomains, **DNS brute-force with enumdns**,
+historical URLs, `.js` extraction and secret discovery (**SecretFinder +
+TruffleHog + Gitleaks**), technology fingerprinting, probing, **content
+discovery with ffuf + SecLists**, **API route discovery with kiterunner**, `gf`
+filters, **OWASP security-header analysis** and **automatic vulnerability
+validation**.
 
 Modes are **combinable** in a single run and the pipeline always executes in a
 logical order, regardless of the order in which the flags were passed.
@@ -12,6 +13,23 @@ logical order, regardless of the order in which the flags were passed.
 ```
 ./recon.sh -u <URL> [modes...] [options]
 ```
+
+---
+
+## What's new in 5.1
+
+- **DNS brute-force with enumdns (`-B`)** — the new `--brute` mode adds
+  subdomain brute-forcing powered by
+  **[enumdns](https://github.com/helviojunior/enumdns)**, a modular Go DNS
+  recon tool. recon.sh does **not** reimplement the resolution logic: it clones
+  and builds enumdns into `./enumdns/` (via `--install-deps`, needs **Go 1.23+**)
+  and wraps `enumdns brute`, so all of enumdns's own strategy runs upstream —
+  wordlist engine, SOA-per-zone resolution, A/AAAA/CNAME records, cloud/ASN
+  fingerprinting, quick mode, and custom resolvers. The wordlist falls back from
+  `--brute-wordlist` → `-w` → a SecLists `Discovery/DNS` list, and results land in
+  `results/dns-brute.txt`. Tune it with `--brute-quick`, `--resolver <ip>`, and
+  `--enumdns-args` (raw passthrough). A release binary from enumdns's GitHub
+  releases is an alternative to building from source.
 
 ---
 
@@ -77,6 +95,12 @@ Leaner, less noisy variant (no directory brute-force):
 ./recon.sh -u https://target.com/ -S -U -f -T -p -v
 ```
 
+Attack-surface mapping — subdomains + DNS brute-force + probing:
+
+```bash
+./recon.sh -u https://target.com/ -S -B -p -v
+```
+
 > `--all` already includes `-T`, `-d`, `-k` and the vulnerability-validation
 > stage — no need to repeat them. API tokens are requested at the start and the
 > preflight runs before any module.
@@ -92,6 +116,7 @@ Leaner, less noisy variant (no directory brute-force):
 | `-t, --tech`       | Technology fingerprint + version guess |
 | `-T, --tech-deep`  | Deep fingerprint (WhatWeb) + OWASP security-header analysis |
 | `-S, --subdomains` | Enumerate subdomains (sublist3r; crt.sh fallback) |
+| `-B, --brute`      | DNS brute-force with [enumdns](https://github.com/helviojunior/enumdns) (cloned + built into `./enumdns/`) |
 | `-U, --urls`       | Collect historical URLs for the domain (gau) |
 | `-p, --probe`      | Port scan (naabu, top 100) + live hosts/URLs (httpx) |
 | `-d, --dirs`       | Content discovery with ffuf + SecLists (dirsearch fallback) |
@@ -100,7 +125,7 @@ Leaner, less noisy variant (no directory brute-force):
 | `-a, --all`        | Run every available module, in logical order |
 
 **Canonical pipeline order** (independent of flag order):
-`subdomains → urls → files → tech → tech-deep → secret → probe → dirs → kite → gf → vulnerability validation`.
+`subdomains → brute → urls → files → tech → tech-deep → secret → probe → dirs → kite → gf → vulnerability validation`.
 
 ---
 
@@ -114,6 +139,10 @@ Leaner, less noisy variant (no directory brute-force):
 | `-w, --wordlist <file>`   | Wordlist for `--dirs` (default: SecLists `raft-<size>-directories.txt`) |
 | `--wordlist-size <s>`     | SecLists raft size for `--dirs`: `small\|medium\|large` (default: `medium`) |
 | `--kite-wordlist <file>`  | kiterunner routes file (`.kite`) (default: auto-detect in `./kiterunner/`) |
+| `--brute-wordlist <file>` | DNS wordlist for `--brute` (default: `-w`, then SecLists `Discovery/DNS/subdomains-top1million-5000.txt`) |
+| `--brute-quick`           | enumdns quick mode — resolve A records only (`-Q`) |
+| `--resolver <ip>`         | DNS server enumdns should query (`-s`; default: system resolver) |
+| `--enumdns-args <str>`    | Extra raw args passed through to `enumdns brute` (e.g. `"--allow-tld --write-jsonl"`) |
 | `--seclists <dir>`        | SecLists directory (default: auto-detect) |
 | `--js-depth <n>`          | Max recursion depth for the asset crawler (default: `8`) |
 | `--js-max <n>`            | Max files downloaded per target (default: `5000`) |
@@ -300,7 +329,7 @@ parsing, no `source`).
 
 ```bash
 ./recon.sh --check          # check tools, Python modules, wordlists and API keys
-./recon.sh --install-deps   # install what's missing (Python + SecretFinder + SecLists + kiterunner routes) and exit
+./recon.sh --install-deps   # install what's missing (Python + SecretFinder + SecLists + kiterunner routes + enumdns) and exit
 ```
 
 | Flag | Description |
@@ -330,14 +359,16 @@ parsing, no `source`).
 | WPScan       | `sudo apt install wpscan` (or `gem install wpscan`) |
 | Nuclei       | `go install github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest` |
 | searchsploit | `sudo apt install exploitdb` |
+| **enumdns** (`-B`) | `--install-deps` clones + builds it into `./enumdns/` (needs **Go 1.23+**); or a release binary from https://github.com/helviojunior/enumdns/releases |
 
 > On Kali the Python `httpx` CLI occupies the `httpx` name; the script detects
 > ProjectDiscovery's binary (often `httpx-toolkit`) and tells you in `--check`
 > which one it will use.
 >
 > Go tools need Go installed (`sudo apt install golang-go`) and `$HOME/go/bin`
-> on `PATH`. `--install-deps` clones SecretFinder and SecLists and downloads the
-> kiterunner routes, but does **not** install Sublist3r/Go/other external tools.
+> on `PATH`. `--install-deps` clones SecretFinder and SecLists, downloads the
+> kiterunner routes, and clones + builds **enumdns** into `./enumdns/` (if Go is
+> present), but does **not** install Sublist3r/Go/other external tools.
 
 ---
 

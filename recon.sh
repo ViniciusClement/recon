@@ -1,8 +1,15 @@
 #!/usr/bin/env bash
 #
-# recon.sh (v5) - Web recon: JS + secrets (SecretFinder / TruffleHog / Gitleaks)
+# recon.sh (v5.1) - Web recon: JS + secrets (SecretFinder / TruffleHog / Gitleaks)
 #                 + tech fingerprint + content discovery (ffuf / kiterunner /
-#                 SecLists) + OWASP header analysis + vulnerability validation.
+#                 SecLists) + DNS brute-force (enumdns) + OWASP header analysis
+#                 + vulnerability validation.
+#
+# What's new in v5.1:
+#   * -B/--brute: DNS brute-force powered by enumdns
+#     (github.com/helviojunior/enumdns). --install-deps clones + builds it into
+#     ./enumdns/ (needs Go 1.23+); recon.sh wraps `enumdns brute`, keeping all of
+#     enumdns's own resolution strategy upstream.
 #
 # What's new in v5:
 #   * -s/--secret also runs TruffleHog (with live verification of the secrets
@@ -21,6 +28,7 @@
 #   ./recon.sh -u https://site.com/ -T            # tech-deep (WhatWeb) + vuln validation
 #   ./recon.sh -u https://site.com/ -d            # ffuf + SecLists raft-medium
 #   ./recon.sh -u https://site.com/ -d -k         # ffuf + kiterunner
+#   ./recon.sh -u https://site.com/ -B            # DNS brute-force (enumdns)
 #   ./recon.sh -u https://site.com/ --all
 #   ./recon.sh -l sites.txt -f -s                 # several targets, one per line
 #   ./recon.sh -l sites.txt -u extra.com -t       # list + an extra target
@@ -31,7 +39,7 @@ set -uo pipefail
 # self_update() can re-exec the script with the same flags after a git pull.
 ORIGINAL_ARGS=("$@")
 
-RECON_VERSION="5.0"
+RECON_VERSION="5.1"
 
 # ---------------------------------------------------------------------------
 # Defaults
@@ -79,6 +87,15 @@ FFUF_THREADS="${FFUF_THREADS:-40}"
 FFUF_RECURSION_DEPTH="${FFUF_RECURSION_DEPTH:-1}"
 KITE_WORDLIST="${KITE_WORDLIST:-}" # .kite routes file; auto-detected when empty
 KITE_DIR="${KITE_DIR:-./kiterunner}"
+
+# enumdns (DNS brute-force) — github.com/helviojunior/enumdns, cloned+built into ./enumdns/
+ENUMDNS_DIR="${ENUMDNS_DIR:-./enumdns}"   # git clone + go build target (bundled next to recon.sh)
+ENUMDNS_REPO="${ENUMDNS_REPO:-https://github.com/helviojunior/enumdns.git}"
+ENUMDNS_BIN="${ENUMDNS_BIN:-}"            # auto-detected when empty (see find_enumdns)
+BRUTE_WORDLIST="${BRUTE_WORDLIST:-}"      # DNS wordlist for -B; falls back to -w, then a SecLists DNS list
+BRUTE_QUICK=0                             # enumdns -Q (A records only); set by --brute-quick
+BRUTE_RESOLVER="${BRUTE_RESOLVER:-}"      # enumdns -s <dns-server> (set by --resolver)
+ENUMDNS_ARGS="${ENUMDNS_ARGS:-}"          # extra raw args passed through to enumdns brute
 
 SECRETFINDER_PATH="${SECRETFINDER_PATH:-./SecretFinder/SecretFinder.py}"
 
@@ -271,6 +288,7 @@ ${H}MODES${R0} ${D}(combinable; always run in pipeline order)${R0}
   ${F}-t${R0}, ${F}--tech${R0}         Technology fingerprint + version guess
   ${F}-T${R0}, ${F}--tech-deep${R0}    Deep fingerprint ${D}(WhatWeb)${R0} + OWASP security-header analysis
   ${F}-S${R0}, ${F}--subdomains${R0}   Enumerate subdomains ${D}(sublist3r; crt.sh fallback)${R0}
+  ${F}-B${R0}, ${F}--brute${R0}        DNS brute-force ${D}(enumdns; bundled in ./enumdns/)${R0}
   ${F}-U${R0}, ${F}--urls${R0}         Historical URLs for the domain ${D}(gau)${R0}
   ${F}-p${R0}, ${F}--probe${R0}        Port scan ${D}(naabu top 100)${R0} + live hosts ${D}(httpx)${R0}
   ${F}-d${R0}, ${F}--dirs${R0}         Content discovery — ffuf + SecLists ${D}(dirsearch fallback)${R0}
@@ -278,7 +296,7 @@ ${H}MODES${R0} ${D}(combinable; always run in pipeline order)${R0}
   ${F}-g${R0}, ${F}--gf${R0}           Flag dangerous URLs ${D}(gf + Gf-Patterns)${R0}
   ${F}-a${R0}, ${F}--all${R0}          Run every module, in logical order
 
-  ${D}Pipeline: subdomains ▸ urls ▸ files ▸ tech ▸ tech-deep ▸ secret ▸${R0}
+  ${D}Pipeline: subdomains ▸ brute ▸ urls ▸ files ▸ tech ▸ tech-deep ▸ secret ▸${R0}
   ${D}          probe ▸ dirs ▸ kite ▸ gf ▸ vulnerability validation${R0}
 
 ${H}TARGETS & OUTPUT${R0}
@@ -301,6 +319,12 @@ ${H}CONTENT DISCOVERY${R0} ${D}(-d / -k)${R0}
       ${F}--seclists${R0} <dir>   SecLists directory            ${D}(default: auto-detect)${R0}
       ${F}--kite-wordlist${R0} <f> kiterunner .kite routes       ${D}(default: ${KITE_DIR}/)${R0}
       ${F}--gf-pattern${R0} <name> gf pattern                    ${D}(default: xss)${R0}
+
+${H}DNS BRUTE-FORCE${R0} ${D}(-B, enumdns)${R0}
+      ${F}--brute-wordlist${R0} <f> DNS wordlist                 ${D}(default: -w, then SecLists Discovery/DNS)${R0}
+      ${F}--brute-quick${R0}      Quick mode — A records only ${D}(enumdns -Q)${R0}
+      ${F}--resolver${R0} <ip>    DNS server to query          ${D}(enumdns -s; default: system)${R0}
+      ${F}--enumdns-args${R0} <s> Extra raw args for enumdns ${D}(e.g. "--allow-tld --write-jsonl")${R0}
 
 ${H}SECRETS${R0} ${D}(-s)${R0}
       ${F}--no-verify${R0}        Do not let TruffleHog verify secrets live
@@ -550,6 +574,74 @@ ensure_kite_wordlist() {
   return 1
 }
 
+# ---------------------------------------------------------------------------
+# enumdns (DNS brute-force) — github.com/helviojunior/enumdns
+# ---------------------------------------------------------------------------
+# Prints the enumdns binary (PATH, bundled ./enumdns/, or $HOME/go/bin), or
+# returns 1 when it cannot be found.
+find_enumdns() {
+  [ -n "$ENUMDNS_BIN" ] && [ -x "$ENUMDNS_BIN" ] && { echo "$ENUMDNS_BIN"; return 0; }
+  local c
+  for c in enumdns "${ENUMDNS_DIR}/enumdns" "$HOME/go/bin/enumdns" /usr/local/sbin/enumdns; do
+    if command -v "$c" >/dev/null 2>&1 || [ -x "$c" ]; then
+      ENUMDNS_BIN="$c"; echo "$c"; return 0
+    fi
+  done
+  return 1
+}
+
+# Clone enumdns into ./enumdns and build it with Go (deploy bundled with recon).
+ensure_enumdns() {
+  if find_enumdns >/dev/null; then
+    vlog "enumdns found at $(find_enumdns)"
+    return 0
+  fi
+  warn "enumdns not found (checked PATH, ${ENUMDNS_DIR}/, \$HOME/go/bin)"
+  command -v git >/dev/null 2>&1 || { err "git is not installed; cannot clone enumdns."; return 1; }
+  command -v go  >/dev/null 2>&1 || {
+    err "Go is not installed; cannot build enumdns (needs Go 1.23+)."
+    err "  install Go: sudo apt install golang-go  (or https://go.dev/dl/)"
+    err "  then re-run --install-deps, or grab a release binary from"
+    err "  https://github.com/helviojunior/enumdns/releases and set ENUMDNS_BIN."
+    return 1
+  }
+  if confirm "Clone enumdns into ${ENUMDNS_DIR} and build it with Go?"; then
+    if [ ! -d "${ENUMDNS_DIR}/.git" ]; then
+      git clone --depth 1 "$ENUMDNS_REPO" "$ENUMDNS_DIR" || { err "Failed to clone enumdns."; return 1; }
+    else
+      vlog "enumdns already cloned at ${ENUMDNS_DIR}; rebuilding"
+    fi
+    if ( cd "$ENUMDNS_DIR" && go build -o enumdns . ); then
+      ENUMDNS_BIN="${ENUMDNS_DIR}/enumdns"
+      ok "enumdns built at ${ENUMDNS_BIN}"
+      return 0
+    fi
+    err "Failed to build enumdns (try: cd ${ENUMDNS_DIR} && go build -o enumdns .)."
+    return 1
+  fi
+  return 1
+}
+
+# Wordlist used by -B: --brute-wordlist / -w wins; otherwise a SecLists DNS list.
+resolve_brute_wordlist() {
+  local cand
+  for cand in "$BRUTE_WORDLIST" "$WORDLIST"; do
+    [ -n "$cand" ] || continue
+    [ -f "$cand" ] && { echo "$cand"; return 0; }
+    err "DNS wordlist not found: $cand"
+    return 1
+  done
+  local sl wl
+  sl="$(find_seclists)" || { err "No --brute-wordlist/-w given and SecLists not found. Run --install-deps or pass a wordlist."; return 1; }
+  for wl in "Discovery/DNS/subdomains-top1million-5000.txt" \
+            "Discovery/DNS/subdomains-top1million-20000.txt" \
+            "Discovery/DNS/namelist.txt"; do
+    [ -f "${sl}/${wl}" ] && { echo "${sl}/${wl}"; return 0; }
+  done
+  err "No usable DNS wordlist inside ${sl}/Discovery/DNS"
+  return 1
+}
+
 # Report (and optionally install) every dependency.
 check_dependencies() {
   local install="$1"   # 1 = try to install what is missing
@@ -602,6 +694,16 @@ check_dependencies() {
   else
     echo "  [MISSING] kiterunner routes (.kite)  ->  --install-deps downloads routes-small.kite into ${KITE_DIR}/" >&2
     [ "$install" -eq 1 ] && ensure_kite_wordlist
+  fi
+
+  ok "== DNS brute-force (enumdns) =="
+  local ed
+  if ed="$(find_enumdns)"; then
+    echo "  [ok]      enumdns ($ed)" >&2
+  else
+    echo "  [MISSING] enumdns  ->  --install-deps clones + builds it into ${ENUMDNS_DIR}/ (needs Go 1.23+)" >&2
+    echo "            or a release binary: https://github.com/helviojunior/enumdns/releases" >&2
+    [ "$install" -eq 1 ] && ensure_enumdns
   fi
 
   ok "== Optional external tools =="
@@ -1619,6 +1721,42 @@ run_vuln_validation() {
 # ---------------------------------------------------------------------------
 # Mode: -subdomains (Sublist3r when available, crt.sh fallback)
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Mode: -B/--brute (enumdns DNS brute-force)
+# ---------------------------------------------------------------------------
+run_enumdns() {
+  local bin wl out
+  if ! bin="$(find_enumdns)"; then
+    warn "enumdns not found; skipping DNS brute-force."
+    warn "  install it bundled with recon: ./recon.sh --install-deps  (clones + builds ./enumdns/)"
+    warn "  or a release binary: https://github.com/helviojunior/enumdns/releases"
+    return 1
+  fi
+  if ! wl="$(resolve_brute_wordlist)"; then
+    return 1
+  fi
+  out="${OUT_FILE:-${RESDIR}/dns-brute.txt}"
+  ok "Using enumdns ($bin) to brute-force DNS on ${DOMAIN}"
+  vlog "[brute] wordlist: $wl"
+
+  local -a args=( brute -d "$DOMAIN" -w "$wl" -o "$out" )
+  [ "$BRUTE_QUICK" -eq 1 ]      && args+=( -Q )
+  [ -n "$BRUTE_RESOLVER" ]      && args+=( -s "$BRUTE_RESOLVER" )
+  # shellcheck disable=SC2206
+  [ -n "$ENUMDNS_ARGS" ]        && args+=( $ENUMDNS_ARGS )
+
+  if "$bin" "${args[@]}"; then
+    local total
+    total="$(grep -c . "$out" 2>/dev/null || echo 0)"
+    ok "DNS brute-force results saved to: $out ($total line(s))"
+  else
+    warn "enumdns returned a non-zero status (public-suffix zone? try --enumdns-args '--allow-tld')"
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# Mode: -S/--subdomains (sublist3r; crt.sh fallback)
+# ---------------------------------------------------------------------------
 run_subdomains() {
   local out="${OUT_FILE:-${RESDIR}/subdomains.txt}"
   if command -v sublist3r >/dev/null 2>&1; then
@@ -1859,6 +1997,7 @@ while [ $# -gt 0 ]; do
     -t|--tech)          add_mode tech; shift ;;
     -T|--tech-deep)     add_mode techdeep; shift ;;
     -S|--subdomains)    add_mode subdomains; shift ;;
+    -B|--brute)         add_mode brute; shift ;;
     -U|--urls)          add_mode urls; shift ;;
     -p|--probe)         add_mode probe; shift ;;
     -d|--dirs)          add_mode dirs; shift ;;
@@ -1869,6 +2008,10 @@ while [ $# -gt 0 ]; do
     -w|--wordlist)      WORDLIST="${2:-}"; shift 2 ;;
     --wordlist-size)    WORDLIST_SIZE="${2:-}"; shift 2 ;;
     --kite-wordlist)    KITE_WORDLIST="${2:-}"; shift 2 ;;
+    --brute-wordlist)   BRUTE_WORDLIST="${2:-}"; shift 2 ;;
+    --brute-quick)      BRUTE_QUICK=1; shift ;;
+    --resolver)         BRUTE_RESOLVER="${2:-}"; shift 2 ;;
+    --enumdns-args)     ENUMDNS_ARGS="${2:-}"; shift 2 ;;
     --seclists)         SECLISTS_DIR="${2:-}"; shift 2 ;;
     --js-depth)         JS_DEPTH="${2:-}"; shift 2 ;;
     --js-max)           JS_MAX="${2:-}"; shift 2 ;;
@@ -1949,7 +2092,7 @@ fi
 # Validation
 # ---------------------------------------------------------------------------
 [ "${#TARGETS[@]}" -eq 0 ] && { err "Provide at least one target with -u/--url or -l/--list"; usage; exit 1; }
-[ "${#MODES[@]}" -eq 0 ]   && { err "Provide at least one mode (-f, -s, -t, -S, -U, -p, -d, -k, -g or -a)"; usage; exit 1; }
+[ "${#MODES[@]}" -eq 0 ]   && { err "Provide at least one mode (-f, -s, -t, -S, -B, -U, -p, -d, -k, -g or -a)"; usage; exit 1; }
 
 for bin in curl grep sed awk python3; do
   command -v "$bin" >/dev/null 2>&1 || { err "Missing base dependency: $bin"; exit 1; }
@@ -1974,7 +2117,7 @@ fi
 # ---------------------------------------------------------------------------
 # Mode expansion (target-independent) — canonical pipeline order
 # ---------------------------------------------------------------------------
-ORDER=(subdomains urls files tech techdeep secret probe dirs kite gf techvuln)
+ORDER=(subdomains brute urls files tech techdeep secret probe dirs kite gf techvuln)
 declare -A want=()
 for m in "${MODES[@]}"; do
   if [ "$m" = "all" ]; then
@@ -2081,6 +2224,7 @@ dispatch_modes() {
       techdeep)    run_tech_deep ;;
       techvuln)    run_vuln_validation ;;
       subdomains)  run_subdomains ;;
+      brute)       run_enumdns ;;
       urls)        run_urls ;;
       probe)       run_probe ;;
       dirs)        run_dirs ;;
@@ -2102,9 +2246,10 @@ _count_lines() { [ -s "$1" ] && grep -c . "$1" 2>/dev/null || echo 0; }
 # global totals used in the final report (G_* variables).
 write_target_summary() {
   local sfile="${OUTDIR}/SUMMARY.md"
-  local subd urlsn jsn techn secretsn th_verified dirsn kiten gfn ports wp_line nuclei_matches
+  local subd bruten urlsn jsn techn secretsn th_verified dirsn kiten gfn ports wp_line nuclei_matches
 
   subd="$(_count_lines "${RESDIR}/subdomains.txt")"
+  bruten="$(_count_lines "${RESDIR}/dns-brute.txt")"
   urlsn="$(_count_lines "${RESDIR}/urls.txt")"
   jsn="$(_count_lines "${RESDIR}/files-js.txt")"
   techn="$(_count_lines "${RESDIR}/tech-detected.txt")"
@@ -2135,6 +2280,7 @@ write_target_summary() {
     echo "| Item | Result |"
     echo "|---|---|"
     echo "| Subdomains (-S) | ${subd} |"
+    [ "$bruten" -gt 0 ] && echo "| DNS brute-force hits (-B) | ${bruten} |"
     echo "| Historical URLs (-U) | ${urlsn} |"
     echo "| JS files (-f) | ${jsn} |"
     echo "| Technologies registered (-t/-T) | ${techn} |"
