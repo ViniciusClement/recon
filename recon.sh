@@ -7,10 +7,12 @@
 #                 + vulnerability validation.
 #
 # What's new in v5.1:
-#   * -B/--brute: DNS brute-force powered by enumdns
-#     (github.com/helviojunior/enumdns). --install-deps clones + builds it into
-#     ./enumdns/ (needs Go 1.23+); recon.sh wraps `enumdns brute`, keeping all of
-#     enumdns's own resolution strategy upstream.
+#   * enumdns (github.com/helviojunior/enumdns) wrapped as three modes, with the
+#     binary cloned + built into ./enumdns/ by --install-deps (needs Go 1.23+):
+#       -B/--brute      DNS brute-force (enumdns brute)
+#       -R/--dns-recon  DNS records + AD/cloud detection (enumdns recon)
+#       --threat        typosquatting/phishing domains (enumdns threat-analysis)
+#     recon.sh only wraps the binary — enumdns's own logic runs upstream.
 #   * -J/--libs: inventory JS dependencies + versions (inlined package.json
 #     manifests, version banners, node_modules paths) and map them to CVEs via
 #     OSV.dev (retire.js used too when installed). Scanner: js-deps-cve.py.
@@ -298,6 +300,8 @@ ${H}MODES${R0} ${D}(combinable; always run in pipeline order)${R0}
   ${F}-T${R0}, ${F}--tech-deep${R0}    Deep fingerprint ${D}(WhatWeb)${R0} + OWASP security-header analysis
   ${F}-S${R0}, ${F}--subdomains${R0}   Enumerate subdomains ${D}(sublist3r; crt.sh fallback)${R0}
   ${F}-B${R0}, ${F}--brute${R0}        DNS brute-force ${D}(enumdns; bundled in ./enumdns/)${R0}
+  ${F}-R${R0}, ${F}--dns-recon${R0}    DNS recon — records + AD/cloud detect ${D}(enumdns)${R0}
+      ${F}--threat${R0}         Typosquatting / phishing domains ${D}(enumdns threat-analysis)${R0}
   ${F}-U${R0}, ${F}--urls${R0}         Historical URLs for the domain ${D}(gau)${R0}
   ${F}-p${R0}, ${F}--probe${R0}        Port scan ${D}(naabu top 100)${R0} + live hosts ${D}(httpx)${R0}
   ${F}-d${R0}, ${F}--dirs${R0}         Content discovery — ffuf + SecLists ${D}(dirsearch fallback)${R0}
@@ -305,7 +309,8 @@ ${H}MODES${R0} ${D}(combinable; always run in pipeline order)${R0}
   ${F}-g${R0}, ${F}--gf${R0}           Flag dangerous URLs ${D}(gf + Gf-Patterns)${R0}
   ${F}-a${R0}, ${F}--all${R0}          Run every module, in logical order
 
-  ${D}Pipeline: subdomains ▸ brute ▸ urls ▸ files ▸ tech ▸ tech-deep ▸ secret ▸ libs ▸${R0}
+  ${D}Pipeline: subdomains ▸ dns-recon ▸ brute ▸ threat ▸ urls ▸ files ▸ tech ▸${R0}
+  ${D}          tech-deep ▸ secret ▸ libs ▸${R0}
   ${D}          probe ▸ dirs ▸ kite ▸ gf ▸ vulnerability validation${R0}
 
 ${H}TARGETS & OUTPUT${R0}
@@ -1818,6 +1823,63 @@ run_enumdns() {
 }
 
 # ---------------------------------------------------------------------------
+# Mode: -R/--dns-recon (enumdns recon — full DNS records, AD/cloud detection)
+# ---------------------------------------------------------------------------
+# Wraps `enumdns recon`: resolves A/AAAA/CNAME/MX/NS/SOA/SRV/TXT, detects Active
+# Directory (SRV) and cloud/SaaS providers, and discovers new domains from the
+# records it finds. Same bundled binary as -B.
+run_dns_recon() {
+  local bin out
+  if ! bin="$(find_enumdns)"; then
+    warn "enumdns not found; skipping DNS recon (./recon.sh --install-deps)."
+    return 1
+  fi
+  out="${OUT_FILE:-${RESDIR}/dns-recon.txt}"
+  ok "Using enumdns ($bin) for DNS recon on ${DOMAIN}"
+
+  local -a args=( recon -d "$DOMAIN" -o "$out" )
+  [ -n "$BRUTE_RESOLVER" ] && args+=( -s "$BRUTE_RESOLVER" )
+  # shellcheck disable=SC2206
+  [ -n "$ENUMDNS_ARGS" ]   && args+=( $ENUMDNS_ARGS )
+
+  if "$bin" "${args[@]}"; then
+    local total
+    total="$(grep -c . "$out" 2>/dev/null || echo 0)"
+    ok "DNS recon results saved to: $out ($total line(s))"
+  else
+    warn "enumdns recon returned a non-zero status (try --enumdns-args '--allow-parent-soa')"
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# Mode: --threat (enumdns threat-analysis — typosquatting / phishing domains)
+# ---------------------------------------------------------------------------
+# Wraps `enumdns threat-analysis --all-techniques`: generates look-alike domains
+# (typosquatting, bitsquatting, homographic, TLD variations, phishing patterns),
+# resolves them and scores the threat. Same bundled binary as -B.
+run_threat() {
+  local bin out
+  if ! bin="$(find_enumdns)"; then
+    warn "enumdns not found; skipping threat-analysis (./recon.sh --install-deps)."
+    return 1
+  fi
+  out="${OUT_FILE:-${RESDIR}/threat-analysis.txt}"
+  ok "Using enumdns ($bin) for threat-analysis (typosquatting/phishing) on ${DOMAIN}"
+
+  local -a args=( threat-analysis -d "$DOMAIN" --all-techniques -o "$out" )
+  # shellcheck disable=SC2206
+  [ -n "$ENUMDNS_ARGS" ] && args+=( $ENUMDNS_ARGS )
+
+  if "$bin" "${args[@]}"; then
+    local total
+    total="$(grep -c . "$out" 2>/dev/null || echo 0)"
+    ok "Threat-analysis results saved to: $out ($total line(s))"
+  else
+    warn "enumdns threat-analysis returned a non-zero status"
+  fi
+}
+
+# ---------------------------------------------------------------------------
 # Mode: -S/--subdomains (sublist3r; crt.sh fallback)
 # ---------------------------------------------------------------------------
 run_subdomains() {
@@ -2062,6 +2124,8 @@ while [ $# -gt 0 ]; do
     -T|--tech-deep)     add_mode techdeep; shift ;;
     -S|--subdomains)    add_mode subdomains; shift ;;
     -B|--brute)         add_mode brute; shift ;;
+    -R|--dns-recon)     add_mode dnsrecon; shift ;;
+    --threat)           add_mode threat; shift ;;
     -U|--urls)          add_mode urls; shift ;;
     -p|--probe)         add_mode probe; shift ;;
     -d|--dirs)          add_mode dirs; shift ;;
@@ -2157,7 +2221,7 @@ fi
 # Validation
 # ---------------------------------------------------------------------------
 [ "${#TARGETS[@]}" -eq 0 ] && { err "Provide at least one target with -u/--url or -l/--list"; usage; exit 1; }
-[ "${#MODES[@]}" -eq 0 ]   && { err "Provide at least one mode (-f, -s, -J, -t, -S, -B, -U, -p, -d, -k, -g or -a)"; usage; exit 1; }
+[ "${#MODES[@]}" -eq 0 ]   && { err "Provide at least one mode (-f, -s, -J, -t, -S, -B, -R, --threat, -U, -p, -d, -k, -g or -a)"; usage; exit 1; }
 
 for bin in curl grep sed awk python3; do
   command -v "$bin" >/dev/null 2>&1 || { err "Missing base dependency: $bin"; exit 1; }
@@ -2182,7 +2246,7 @@ fi
 # ---------------------------------------------------------------------------
 # Mode expansion (target-independent) — canonical pipeline order
 # ---------------------------------------------------------------------------
-ORDER=(subdomains brute urls files tech techdeep secret libs probe dirs kite gf techvuln)
+ORDER=(subdomains dnsrecon brute threat urls files tech techdeep secret libs probe dirs kite gf techvuln)
 declare -A want=()
 for m in "${MODES[@]}"; do
   if [ "$m" = "all" ]; then
@@ -2290,6 +2354,8 @@ dispatch_modes() {
       techvuln)    run_vuln_validation ;;
       subdomains)  run_subdomains ;;
       brute)       run_enumdns ;;
+      dnsrecon)    run_dns_recon ;;
+      threat)      run_threat ;;
       libs)        run_libs ;;
       urls)        run_urls ;;
       probe)       run_probe ;;
@@ -2312,11 +2378,13 @@ _count_lines() { [ -s "$1" ] && grep -c . "$1" 2>/dev/null || echo 0; }
 # global totals used in the final report (G_* variables).
 write_target_summary() {
   local sfile="${OUTDIR}/SUMMARY.md"
-  local subd bruten urlsn jsn techn secretsn th_verified dirsn kiten gfn ports wp_line nuclei_matches
+  local subd bruten dnsreconn threatn urlsn jsn techn secretsn th_verified dirsn kiten gfn ports wp_line nuclei_matches
   local libsn libcve
 
   subd="$(_count_lines "${RESDIR}/subdomains.txt")"
   bruten="$(_count_lines "${RESDIR}/dns-brute.txt")"
+  dnsreconn="$(_count_lines "${RESDIR}/dns-recon.txt")"
+  threatn="$(_count_lines "${RESDIR}/threat-analysis.txt")"
   libsn=0; libcve=0
   if [ -s "${RESDIR}/js-libs.json" ]; then
     libsn="$(grep -c '"version":' "${RESDIR}/js-libs.json" 2>/dev/null || echo 0)"
@@ -2353,6 +2421,8 @@ write_target_summary() {
     echo "|---|---|"
     echo "| Subdomains (-S) | ${subd} |"
     [ "$bruten" -gt 0 ] && echo "| DNS brute-force hits (-B) | ${bruten} |"
+    [ "$dnsreconn" -gt 0 ] && echo "| DNS recon records (-R) | ${dnsreconn} |"
+    [ "$threatn" -gt 0 ] && echo "| Threat-analysis lines (--threat) | ${threatn} — see \`results/threat-analysis.txt\` |"
     [ "$libsn" -gt 0 ] && echo "| JS dependencies (-J) | ${libsn} (CVEs: ${libcve}) — see \`results/js-dependencies-report.md\` |"
     echo "| Historical URLs (-U) | ${urlsn} |"
     echo "| JS files (-f) | ${jsn} |"

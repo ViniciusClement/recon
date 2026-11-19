@@ -88,6 +88,8 @@ Targets can be a bare domain or a full URL; `-u` is repeatable and combines with
 | `-T, --tech-deep`  | Deep fingerprint (WhatWeb) + OWASP security-header analysis |
 | `-S, --subdomains` | Enumerate subdomains (sublist3r; crt.sh fallback) |
 | `-B, --brute`      | **DNS brute-force** with enumdns |
+| `-R, --dns-recon`  | **DNS recon** — records + AD/cloud detection (enumdns) |
+| `--threat`         | **Typosquatting / phishing** domain analysis (enumdns) |
 | `-U, --urls`       | Historical URLs for the domain (gau) |
 | `-p, --probe`      | Port scan (naabu top 100) + live hosts (httpx) |
 | `-d, --dirs`       | Content discovery — ffuf + SecLists (dirsearch fallback) |
@@ -95,8 +97,9 @@ Targets can be a bare domain or a full URL; `-u` is repeatable and combines with
 | `-g, --gf`         | Flag dangerous URLs (gf + Gf-Patterns) |
 | `-a, --all`        | Run every module, in order |
 
-**Pipeline order:** subdomains → brute → urls → files → tech → tech-deep →
-secret → libs → probe → dirs → kite → gf → vulnerability validation.
+**Pipeline order:** subdomains → dns-recon → brute → threat → urls → files →
+tech → tech-deep → secret → libs → probe → dirs → kite → gf → vulnerability
+validation.
 
 Vulnerability validation (WPScan / Nuclei / searchsploit) runs **automatically**
 after `-t`/`-T`; disable it with `--no-vuln`.
@@ -120,6 +123,16 @@ enumdns's full resolution engine, not a bash reimplementation.
 
 Wordlist resolves from `--brute-wordlist` → `-w` → a SecLists `Discovery/DNS`
 list. Output: `results/dns-brute.txt`.
+
+Two more enumdns modules are wired as their own modes (same bundled binary):
+
+```bash
+./recon.sh -u target.com -R          # DNS recon: A/AAAA/CNAME/MX/NS/SOA/SRV/TXT,
+                                     #   Active Directory + cloud/SaaS detection
+                                     #   -> results/dns-recon.txt
+./recon.sh -u target.com --threat    # typosquatting / phishing look-alike domains
+                                     #   (enumdns threat-analysis) -> results/threat-analysis.txt
+```
 
 ### Full-site mirror (`-f`)
 
