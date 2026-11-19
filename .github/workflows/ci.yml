@@ -1,0 +1,26 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  lint:
+    name: Shell + Python checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Bash syntax check (recon.sh)
+        run: bash -n recon.sh
+
+      - name: ShellCheck (errors only; ratchet severity over time)
+        run: shellcheck -S error recon.sh
+
+      - name: Python compile (every *.py present)
+        run: |
+          shopt -s nullglob
+          for f in *.py; do
+            echo "py_compile $f"
+            python3 -m py_compile "$f"
+          done
